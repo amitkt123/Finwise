@@ -1,0 +1,29 @@
+{
+  "info": {
+    "name": "Expense Tracker – Dashboard",
+    "_postman_id": "dashboard-collection-001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "userId",  "value": "user1" }
+  ],
+  "item": [
+    {
+      "name": "Financial Dashboard",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/dashboard?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "dashboard"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        },
+        "description": "Returns aggregated snapshot: portfolio value/gains, monthly budget status, active/at-risk goal counts, and alert counts."
+      }
+    }
+  ]
+}

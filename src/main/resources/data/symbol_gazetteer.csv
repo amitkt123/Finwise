@@ -1,0 +1,86 @@
+# SYMBOL,ISIN,SECTOR,aliases
+HDFCBANK,INE040A01034,Banking,hdfc bank|hdfc bank ltd|hdfc bank limited|hdfcbank
+ICICIBANK,INE090A01021,Banking,icici bank|icici bank ltd|icicibank
+SBIN,INE062A01020,Banking,sbi|state bank of india|state bank|sbin
+KOTAKBANK,INE237A01028,Banking,kotak bank|kotak mahindra bank|kotak
+AXISBANK,INE238A01034,Banking,axis bank|axisbank
+INDUSINDBK,INE095A01012,Banking,indusind bank|indusind
+
+TCS,INE467B01029,IT,tata consultancy services|tcs|tata consultancy
+INFY,INE009A01021,IT,infosys|infosys ltd|infy
+WIPRO,INE075A01022,IT,wipro|wipro ltd
+HCLTECH,INE860A01027,IT,hcl tech|hcl technologies|hcltech
+TECHM,INE669C01036,IT,tech mahindra|techm
+
+RELIANCE,INE002A01018,Energy,reliance industries|ril|reliance
+ONGC,INE213A01029,Energy,ongc|oil and natural gas corporation
+COALINDIA,INE522F01014,Energy,coal india|coalindia
+IOC,INE242A01010,Energy,indian oil|indian oil corporation|ioc
+BPCL,INE029A01011,Energy,bpcl|bharat petroleum
+
+BHARTIARTL,INE397D01024,Telecom,bharti airtel|airtel
+IDEA,INE669E01016,Telecom,vodafone idea|idea|vi
+
+TATAMOTORS,INE155A01022,Auto,tata motors|tatamotors
+MARUTI,INE585B01010,Auto,maruti suzuki|maruti
+M&M,INE101A01026,Auto,mahindra and mahindra|m and m|mahindra
+BAJAJ_AUTO,INE917I01010,Auto,bajaj auto
+EICHERMOT,INE066A01021,Auto,eicher motors|royal enfield
+
+SUNPHARMA,INE044A01036,Pharma,sun pharma|sun pharmaceutical|sunpharma
+DRREDDY,INE089A01023,Pharma,dr reddy|dr reddys|dr reddy laboratories
+CIPLA,INE059A01026,Pharma,cipla|cipla ltd
+DIVISLAB,INE361B01024,Pharma,divis labs|divis laboratories
+LUPIN,INE326A01037,Pharma,lupin|lupin ltd
+
+HINDUNILVR,INE030A01027,FMCG,hul|hindustan unilever|hindunilvr
+ITC,INE154A01025,FMCG,itc|itc ltd
+NESTLEIND,INE239A01024,FMCG,nestle india|nestle
+BRITANNIA,INE216A01030,FMCG,britannia|britannia industries
+DABUR,INE016A01026,FMCG,dabur|dabur india
+MARICO,INE196A01026,FMCG,marico|marico ltd
+
+ADANIENT,INE423A01024,Infrastructure,adani enterprises|adanient
+ADANIPORTS,INE742F01042,Infrastructure,adani ports|adani ports and sez
+LT,INE018A01030,Infrastructure,larsen and toubro|l and t|lt
+ULTRACEMCO,INE481G01011,Infrastructure,ultratech cement|ultracemco
+GRASIM,INE047A01021,Infrastructure,grasim|grasim industries
+
+BAJFINANCE,INE296A01024,Financial Services,bajaj finance|bajaj finance ltd|bajfinance
+BAJAJFINSV,INE918I01026,Financial Services,bajaj finserv|bajaj finserv ltd
+HDFCLIFE,INE795G01014,Financial Services,hdfc life|hdfc life insurance
+SBILIFE,INE123W01016,Financial Services,sbi life|sbi life insurance
+ICICIPRULI,INE726G01019,Financial Services,icici prudential life|icici pru life
+
+ASIANPAINT,INE021A01026,Consumer,asian paints
+TITAN,INE280A01028,Consumer,titan company|titan
+PIDILITIND,INE318A01026,Consumer,pidilite|pidilite industries
+
+DMART,INE192R01011,Retail,avenue supermarts|dmart
+TRENT,INE849A01020,Retail,trent|trent ltd
+
+ZOMATO,INE758T01015,Internet,zomato
+PAYTM,INE982J01020,Fintech,paytm|one97 communications
+NAUKRI,INE663F01024,Internet,info edge|naukri
+POLICYBZR,INE417T01026,Fintech,policybazaar|pb fintech
+
+TATASTEEL,INE081A01020,Metals,tata steel
+JSWSTEEL,INE019A01038,Metals,jsw steel
+HINDALCO,INE038A01020,Metals,hindalco
+VEDL,INE205A01025,Metals,vedanta|vedl
+
+POWERGRID,INE752E01010,Power,power grid|powergrid corporation
+NTPC,INE733E01010,Power,ntpc|ntpc ltd
+ADANIGREEN,INE364U01010,Power,adani green energy
+TATAPOWER,INE245A01021,Power,tata power
+
+IRCTC,INE335Y01020,PSU,irctc|indian railway catering
+HAL,INE066F01012,PSU,hal|hindustan aeronautics
+BEL,INE263A01024,PSU,bel|bharat electronics
+
+INDIGO,INE646L01027,Aviation,interglobe aviation|indigo
+SPICEJET,INE285B01017,Aviation,spicejet
+
+APOLLOHOSP,INE437A01024,Healthcare,apollo hospitals
+FORTIS,INE061F01013,Healthcare,fortis healthcare
+MAXHEALTH,INE027H01010,Healthcare,max healthcare

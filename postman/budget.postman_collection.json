@@ -1,0 +1,99 @@
+{
+  "info": {
+    "name": "Expense Tracker – Budget",
+    "_postman_id": "budget-collection-001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "userId",  "value": "user1" },
+    { "key": "month",   "value": "2026-04" }
+  ],
+  "item": [
+    {
+      "name": "Set Budget for Category",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/budget?userId={{userId}}&month={{month}}&category=FOOD_DINING&limit=5000",
+          "host": ["{{baseUrl}}"],
+
+          "path": ["api", "finance", "budget"],
+          "query": [
+            { "key": "userId",   "value": "{{userId}}" },
+            { "key": "month",    "value": "{{month}}",
+              "description": "Format: YYYY-MM" },
+            { "key": "category", "value": "FOOD_DINING",
+              "description": "FOOD_DINING | GROCERIES | TRANSPORTATION | UTILITIES | ENTERTAINMENT | SHOPPING | HEALTHCARE | INSURANCE | SUBSCRIPTION | INVESTMENT | SAVINGS | OTHER" },
+            { "key": "limit",    "value": "5000" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Current Month Budget Status",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/budget/current?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "budget", "current"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Budget Alerts for Month",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/budget/alerts?userId={{userId}}&month={{month}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "budget", "alerts"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" },
+            { "key": "month",  "value": "{{month}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Spending Insights (last N months)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/insights?userId={{userId}}&months=6",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "insights"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" },
+            { "key": "months", "value": "6" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Suggest Budget (based on history)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/budget/suggest?userId={{userId}}&months=3",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "budget", "suggest"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" },
+            { "key": "months", "value": "3",
+              "description": "Number of past months to base suggestions on" }
+          ]
+        }
+      }
+    }
+  ]
+}

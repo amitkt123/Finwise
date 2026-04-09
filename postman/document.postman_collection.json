@@ -1,0 +1,68 @@
+{
+  "info": {
+    "name": "Expense Tracker – Documents",
+    "_postman_id": "document-collection-001",
+    "description": "Upload bank/MF/credit-card statements. Parsed debit entries are automatically saved as Expense records — budget limits are updated and the CFO advisor can reference them.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",    "value": "http://localhost:8080" },
+    { "key": "documentId", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Upload PDF Statement",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Bank / MF / Demat / Credit Card PDF"
+            },
+            {
+              "key": "password",
+              "type": "text",
+              "value": "",
+              "description": "Optional – only for password-protected PDFs"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/documents/upload",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "documents", "upload"]
+        },
+        "description": "Auto-detects institution (HDFC, ICICI, SBI, AXIS, KOTAK, CAMS, NSDL). Debit entries are saved as Expense records with auto-detected categories. MF purchases are saved as INVESTMENT expenses."
+      }
+    },
+    {
+      "name": "List All Uploaded Documents",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/documents",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "documents"]
+        }
+      }
+    },
+    {
+      "name": "Get Document by ID",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/documents/{{documentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "documents", "{{documentId}}"]
+        }
+      }
+    }
+  ]
+}

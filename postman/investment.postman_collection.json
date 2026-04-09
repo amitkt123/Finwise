@@ -1,0 +1,98 @@
+{
+  "info": {
+    "name": "Expense Tracker – Investment",
+    "_postman_id": "investment-collection-001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl",      "value": "http://localhost:8080" },
+    { "key": "userId",       "value": "user1" },
+    { "key": "investmentId", "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Add Investment",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/investment?userId={{userId}}&type=STOCK&symbol=HDFCBANK&name=HDFC+Bank+Ltd&quantity=10&costPerUnit=1650.50&platform=Zerodha",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "investment"],
+          "query": [
+            { "key": "userId",      "value": "{{userId}}" },
+            { "key": "type",        "value": "STOCK",
+              "description": "STOCK | MUTUAL_FUND | ETF | BOND | CRYPTOCURRENCY | REAL_ESTATE | GOLD | COMMODITY | FIXED_DEPOSIT | POST_OFFICE_SCHEME | PPF | INSURANCE_POLICY | OTHER" },
+            { "key": "symbol",      "value": "HDFCBANK" },
+            { "key": "name",        "value": "HDFC Bank Ltd" },
+            { "key": "quantity",    "value": "10" },
+            { "key": "costPerUnit", "value": "1650.50" },
+            { "key": "platform",    "value": "Zerodha",
+              "description": "Optional. e.g. Zerodha, Groww, Upstox" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Update Investment Current Price",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/investment/{{investmentId}}/price?currentPrice=1720.00",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "investment", "{{investmentId}}", "price"],
+          "query": [
+            { "key": "currentPrice", "value": "1720.00" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Portfolio Analysis",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/portfolio/analysis?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "portfolio", "analysis"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Portfolio Rebalancing Recommendation",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/portfolio/rebalance?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "portfolio", "rebalance"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        },
+        "description": "Uses a hardcoded target: STOCK 50%, BOND 30%, FIXED_DEPOSIT 20%"
+      }
+    },
+    {
+      "name": "Get Active Investments",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/investment/active?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "investment", "active"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        }
+      }
+    }
+  ]
+}

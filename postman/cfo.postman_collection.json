@@ -1,0 +1,277 @@
+{
+  "info": {
+    "name": "Expense Tracker – CFO Advisor",
+    "_postman_id": "cfo-collection-001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" }
+  ],
+  "item": [
+    {
+      "name": "Insights",
+      "item": [
+        {
+          "name": "Get Daily Brief (generate if missing)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/brief",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "brief"]
+            }
+          }
+        },
+        {
+          "name": "List All Insights (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/insights?page=0&size=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "insights"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "20" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Latest Insight by Type",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/insights/DAILY_BRIEF",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "insights", "DAILY_BRIEF"],
+              "variable": [
+                {
+                  "key": "type",
+                  "value": "DAILY_BRIEF",
+                  "description": "DAILY_BRIEF | PORTFOLIO_ALERT | GOAL_ADVICE | NEWS_SUMMARY | REBALANCE_ALERT | MARKET_INSIGHT | EXPENSE_ALERT | CHAT_RESPONSE"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Goal Advice (AI)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/goals/advice",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "goals", "advice"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Chat",
+      "item": [
+        {
+          "name": "Chat with CFO",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Should I buy more HDFC Bank given current market conditions?\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/chat",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "chat"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Portfolio",
+      "item": [
+        {
+          "name": "Get Latest Portfolio Snapshot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/portfolio",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "portfolio"]
+            }
+          }
+        },
+        {
+          "name": "Trigger Groww Sync (manual)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/sync/groww",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "sync", "groww"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transactions",
+      "item": [
+        {
+          "name": "List Transactions (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/transactions?page=0&size=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "transactions"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "50" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Recent Transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/transactions/recent?days=30",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "transactions", "recent"],
+              "query": [
+                { "key": "days", "value": "30" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "News",
+      "item": [
+        {
+          "name": "Get Latest News (ranked by relevance)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/news?limit=20&daysBack=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "news"],
+              "query": [
+                { "key": "limit",    "value": "20" },
+                { "key": "daysBack", "value": "1" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Trigger Manual News Fetch",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/news/fetch",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "news", "fetch"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "Auth – Groww",
+      "item": [
+        {
+          "name": "Save Groww Bearer Token",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"token\": \"eyJhbGciOiJSUzI1NiJ9...\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/auth/groww/token",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "auth", "groww", "token"]
+            },
+            "description": "Paste the Bearer token copied from Groww browser DevTools (Network tab)."
+          }
+        },
+        {
+          "name": "Save Groww Credentials (for auto-refresh)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"credentialsJson\": \"{\\\"email\\\":\\\"you@example.com\\\",\\\"password\\\":\\\"secret\\\"}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/auth/groww/credentials",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "auth", "groww", "credentials"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "User Profile",
+      "item": [
+        {
+          "name": "Get Profile",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "profile"]
+            }
+          }
+        },
+        {
+          "name": "Update Profile",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Amit Tiwari\",\n  \"email\": \"amit@example.com\",\n  \"monthlyIncome\": 150000,\n  \"monthlyFixedExpenses\": 40000,\n  \"riskAppetite\": \"MODERATE\",\n  \"investmentHorizonYears\": 10,\n  \"targetMonthlySavings\": 30000,\n  \"primaryGoalDescription\": \"Build a ₹1Cr corpus in 10 years\",\n  \"additionalContext\": \"Prefer index funds over direct stocks\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/cfo/profile",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "cfo", "profile"]
+            },
+            "description": "All fields are optional – only provided fields are updated.\nriskAppetite: CONSERVATIVE | MODERATE | AGGRESSIVE"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "info": {
+    "name": "Expense Tracker – Goal",
+    "_postman_id": "goal-collection-001",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "userId",  "value": "user1" },
+    { "key": "goalId",  "value": "1" }
+  ],
+  "item": [
+    {
+      "name": "Create Financial Goal",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/goal?userId={{userId}}&name=Emergency+Fund&description=6+months+of+expenses&type=EMERGENCY_FUND&targetAmount=300000&targetDate=2026-12-31&priority=HIGH",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "goal"],
+          "query": [
+            { "key": "userId",       "value": "{{userId}}" },
+            { "key": "name",         "value": "Emergency Fund" },
+            { "key": "description",  "value": "6 months of expenses" },
+            { "key": "type",         "value": "EMERGENCY_FUND",
+              "description": "SAVINGS | INVESTMENT | DEBT_PAYOFF | PURCHASE | EMERGENCY_FUND | EDUCATION | RETIREMENT | WEALTH_BUILDING | PROPERTY | VACATION | OTHER" },
+            { "key": "targetAmount", "value": "300000" },
+            { "key": "targetDate",   "value": "2026-12-31",
+              "description": "Format: YYYY-MM-DD" },
+            { "key": "priority",     "value": "HIGH",
+              "description": "Optional. LOW | MEDIUM | HIGH | CRITICAL. Defaults to MEDIUM" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Update Goal Progress",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/goal/{{goalId}}/progress?amountAdded=10000",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "goal", "{{goalId}}", "progress"],
+          "query": [
+            { "key": "amountAdded", "value": "10000" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Analyze Goal",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/goal/{{goalId}}/analysis",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "goal", "{{goalId}}", "analysis"]
+        }
+      }
+    },
+    {
+      "name": "Get Goal Alerts",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/goal/alerts?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "goal", "alerts"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Get Active Goals",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/goal/active?userId={{userId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "goal", "active"],
+          "query": [
+            { "key": "userId", "value": "{{userId}}" }
+          ]
+        }
+      }
+    }
+  ]
+}
