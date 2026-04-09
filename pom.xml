@@ -12,7 +12,7 @@
     </parent>
 
     <groupId>org.amit</groupId>
-    <artifactId>expense-tracker</artifactId>
+    <artifactId>finwise</artifactId>
     <version>0.0.1-SNAPSHOT</version>
 
     <properties>

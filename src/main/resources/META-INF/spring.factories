@@ -1,2 +1,2 @@
 org.springframework.boot.env.EnvironmentPostProcessor=\
-  org.amit.expensetracker.config.DotenvConfig
+  org.amit.finwise.config.DotenvConfig
