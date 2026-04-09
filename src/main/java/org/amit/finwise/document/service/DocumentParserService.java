@@ -82,9 +82,11 @@ public class DocumentParserService {
             upload.setDocumentType(detected.documentType());
             upload.setInstitution(detected.institution());
 
+            final Long uploadId = upload.getId();
             List<Expense> expenses = parseExpenses(text, detected, userId);
             int saved = 0;
             for (Expense expense : expenses) {
+                expense.setPdfUploadId(uploadId);
                 expenseRepository.save(expense);
                 budgetMonitorService.updateBudgetForExpense(userId, expense);
                 saved++;

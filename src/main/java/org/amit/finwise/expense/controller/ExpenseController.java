@@ -5,6 +5,7 @@ import org.amit.finwise.budget.service.BudgetMonitorService;
 import org.amit.finwise.expense.model.Expense;
 import org.amit.finwise.expense.repository.ExpenseRepository;
 import org.amit.finwise.expense.service.ExpenseService;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +23,9 @@ public class ExpenseController {
     private final ExpenseService expenseService;
     private final BudgetMonitorService budgetMonitorService;
     private final ExpenseRepository expenseRepository;
+
+    @Value("${cfo.user.id}")
+    private String defaultUserId;
 
     @PostMapping("/expense")
     public ResponseEntity<Expense> recordExpense(@RequestParam String userId,
@@ -63,5 +67,29 @@ public class ExpenseController {
             @RequestParam(defaultValue = "20") int size) {
         return ResponseEntity.ok(expenseRepository.findByUserInDateRange(
                 userId, startDate, endDate, PageRequest.of(page, size)));
+    }
+
+    /**
+     * GET /api/finance/expenses
+     * Paginated list of all expenses for the configured user, newest first.
+     */
+    @GetMapping("/expenses")
+    public ResponseEntity<Page<Expense>> listExpenses(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(expenseRepository.findByUserId(defaultUserId, PageRequest.of(page, size)));
+    }
+
+    /**
+     * GET /api/finance/expenses/source/{source}
+     * Filter expenses by source (e.g. UPI_PDF, BANK_PDF, SMS, MANUAL).
+     */
+    @GetMapping("/expenses/source/{source}")
+    public ResponseEntity<Page<Expense>> listExpensesBySource(
+            @PathVariable Expense.ExpenseSource source,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ResponseEntity.ok(expenseRepository.findByUserIdAndSource(
+                defaultUserId, source, PageRequest.of(page, size)));
     }
 }

@@ -2,7 +2,9 @@ package org.amit.finwise.cfo.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.model.StockPriceHistory;
+import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
 import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.service.price.PriceDataProvider;
 import org.amit.finwise.cfo.service.price.PriceDataProvider.DailyPrice;
@@ -16,6 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -43,6 +46,7 @@ public class StockPriceService {
 
     private final StockPriceHistoryRepository priceRepo;
     private final InvestmentRepository investmentRepo;
+    private final PortfolioSnapshotRepository snapshotRepo;
     private final List<PriceDataProvider> providers; // injected in priority order by PriceProviderConfig
 
     @Value("${cfo.price.history-days:30}")
@@ -102,6 +106,120 @@ public class StockPriceService {
 
         log.info("[PriceService] Done. fetched={}, skipped(already up-to-date)={}, failed={}",
                 fetched, skipped, failed);
+
+        // Sync latest prices back to Investment records and rebuild portfolio snapshot
+        updateInvestmentCurrentPrices(userId);
+        rebuildPortfolioSnapshot(userId);
+    }
+
+    /**
+     * For every active investment that has a symbol, look up the most recent close price
+     * from StockPriceHistory and write it back to the Investment record
+     * (currentPrice, currentValue, unrealizedGainLoss, gainLossPercentage).
+     */
+    @Transactional
+    public void updateInvestmentCurrentPrices(String userId) {
+        List<Investment> investments = investmentRepo.findActiveInvestments(userId);
+        int updated = 0;
+        for (Investment inv : investments) {
+            if (inv.getSymbol() == null || inv.getSymbol().isBlank()) continue;
+            Optional<StockPriceHistory> latest = priceRepo
+                    .findTopBySymbolOrderByPriceDateDesc(inv.getSymbol().toUpperCase());
+            if (latest.isEmpty() || latest.get().getClosePrice() == null) continue;
+
+            BigDecimal latestClose = latest.get().getClosePrice();
+            inv.setCurrentPrice(latestClose);
+
+            if (inv.getQuantity() != null) {
+                BigDecimal currentVal = latestClose.multiply(inv.getQuantity())
+                        .setScale(4, RoundingMode.HALF_UP);
+                inv.setCurrentValue(currentVal);
+
+                if (inv.getTotalCost() != null && inv.getTotalCost().compareTo(BigDecimal.ZERO) != 0) {
+                    BigDecimal pnl = currentVal.subtract(inv.getTotalCost());
+                    inv.setUnrealizedGainLoss(pnl);
+                    BigDecimal pnlPct = pnl.divide(inv.getTotalCost(), 6, RoundingMode.HALF_UP)
+                            .multiply(BigDecimal.valueOf(100))
+                            .setScale(4, RoundingMode.HALF_UP);
+                    inv.setGainLossPercentage(pnlPct);
+                }
+            }
+
+            investmentRepo.save(inv);
+            updated++;
+        }
+        log.info("[PriceService] Updated current prices for {} investment records", updated);
+    }
+
+    /**
+     * Compute a fresh PortfolioSnapshot from current Investment values and persist it.
+     * Called after every price fetch cycle so the snapshot always reflects live prices.
+     */
+    @Transactional
+    public void rebuildPortfolioSnapshot(String userId) {
+        List<Investment> investments = investmentRepo.findActiveInvestments(userId);
+        if (investments.isEmpty()) return;
+
+        BigDecimal totalInvested = investments.stream()
+                .filter(i -> i.getTotalCost() != null)
+                .map(Investment::getTotalCost)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal currentValue = investments.stream()
+                .filter(i -> i.getCurrentValue() != null)
+                .map(Investment::getCurrentValue)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal unrealizedPnl = currentValue.subtract(totalInvested);
+
+        BigDecimal overallPnlPct = BigDecimal.ZERO;
+        if (totalInvested.compareTo(BigDecimal.ZERO) > 0) {
+            overallPnlPct = unrealizedPnl.divide(totalInvested, 6, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(100))
+                    .setScale(2, RoundingMode.HALF_UP);
+        }
+
+        // Day P&L: sum of (quantity × priceChangePercent/100 × prevClose) for each holding
+        BigDecimal dayPnl = BigDecimal.ZERO;
+        for (Investment inv : investments) {
+            if (inv.getSymbol() == null || inv.getQuantity() == null) continue;
+            Optional<StockPriceHistory> latest = priceRepo
+                    .findTopBySymbolOrderByPriceDateDesc(inv.getSymbol().toUpperCase());
+            if (latest.isEmpty() || latest.get().getPriceChangePercent() == null
+                    || latest.get().getClosePrice() == null) continue;
+
+            double changePct = latest.get().getPriceChangePercent();
+            BigDecimal prevClose = latest.get().getClosePrice()
+                    .divide(BigDecimal.ONE.add(BigDecimal.valueOf(changePct / 100)), 6, RoundingMode.HALF_UP);
+            BigDecimal dayMove = latest.get().getClosePrice().subtract(prevClose)
+                    .multiply(inv.getQuantity())
+                    .setScale(2, RoundingMode.HALF_UP);
+            dayPnl = dayPnl.add(dayMove);
+        }
+
+        BigDecimal dayPnlPct = BigDecimal.ZERO;
+        if (currentValue.compareTo(BigDecimal.ZERO) > 0) {
+            dayPnlPct = dayPnl.divide(currentValue.subtract(dayPnl).max(BigDecimal.ONE), 6, RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(100))
+                    .setScale(2, RoundingMode.HALF_UP);
+        }
+
+        PortfolioSnapshot snapshot = PortfolioSnapshot.builder()
+                .userId(userId)
+                .snapshotTime(LocalDateTime.now())
+                .source("PRICE_FETCH")
+                .totalInvested(totalInvested)
+                .currentValue(currentValue)
+                .unrealizedPnl(unrealizedPnl)
+                .overallPnlPercent(overallPnlPct)
+                .dayPnl(dayPnl)
+                .dayPnlPercent(dayPnlPct)
+                .holdingsCount(investments.size())
+                .build();
+
+        snapshotRepo.save(snapshot);
+        log.info("[PriceService] Portfolio snapshot rebuilt: invested=₹{}, current=₹{}, pnl=₹{} ({}%)",
+                totalInvested, currentValue, unrealizedPnl, overallPnlPct);
     }
 
     /**

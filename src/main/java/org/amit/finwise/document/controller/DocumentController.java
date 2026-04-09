@@ -3,6 +3,8 @@ package org.amit.finwise.document.controller;
 import lombok.RequiredArgsConstructor;
 import org.amit.finwise.document.model.DocumentUpload;
 import org.amit.finwise.document.service.DocumentParserService;
+import org.amit.finwise.expense.model.Expense;
+import org.amit.finwise.expense.repository.ExpenseRepository;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -16,6 +18,7 @@ import java.util.List;
 public class DocumentController {
 
     private final DocumentParserService documentParserService;
+    private final ExpenseRepository expenseRepository;
 
     /**
      * POST /api/documents/upload
@@ -47,5 +50,14 @@ public class DocumentController {
         return documentParserService.getDocument(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * GET /api/documents/{id}/expenses
+     * Returns all expenses that were extracted from the given document upload.
+     */
+    @GetMapping("/{id}/expenses")
+    public ResponseEntity<List<Expense>> getExpenses(@PathVariable Long id) {
+        return ResponseEntity.ok(expenseRepository.findByPdfUploadId(id));
     }
 }

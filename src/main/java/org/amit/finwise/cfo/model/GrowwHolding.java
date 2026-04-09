@@ -13,10 +13,11 @@ public record GrowwHolding(
         @JsonProperty("quantity") BigDecimal quantity,
         @JsonProperty("average_price") BigDecimal avgPrice,
 
-        // Optional: Useful for distinguishing between what you own vs what is settled
-        @JsonProperty("demat_free_quantity") BigDecimal tradableQuantity,
+        // Settlement / tradability
+        @JsonProperty("demat_free_quantity") BigDecimal dematFreeQuantity,
         @JsonProperty("t1_quantity") BigDecimal t1Quantity,
+        @JsonProperty("pledge_quantity") BigDecimal pledgeQuantity,
 
-        // Optional: List of exchanges (NSE/BSE)
+        // Exchanges (NSE/BSE)
         @JsonProperty("tradable_exchanges") List<String> exchanges
 ) {}

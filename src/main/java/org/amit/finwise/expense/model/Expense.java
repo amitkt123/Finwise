@@ -65,6 +65,10 @@ public class Expense {
     @Column(length = 100)
     private String budgetCategory;
 
+    /** ID of the DocumentUpload this expense was parsed from (null for manual/SMS entries). */
+    @Column(name = "pdf_upload_id")
+    private Long pdfUploadId;
+
     @CreationTimestamp
     @Column(nullable = false, updatable = false)
     private LocalDateTime createdAt;

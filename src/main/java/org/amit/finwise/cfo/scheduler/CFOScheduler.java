@@ -33,55 +33,60 @@ public class CFOScheduler {
     @Value("${cfo.user.id}")
     private String defaultUserId;
 
-    // ── News Jobs ─────────────────────────────────────────────────────────────
+    // ── Morning Pipeline ──────────────────────────────────────────────────────
+    // Sequence: news → Groww sync → brief (all data fresh before LLM call)
 
-    /** 7:00 AM IST — Pre-market news fetch */
+    /**
+     * 7:00 AM IST — Fetch pre-market news so the morning brief has today's headlines.
+     */
     @Scheduled(cron = "${cfo.schedule.news.premarket:0 0 7 * * MON-FRI}", zone = "Asia/Kolkata")
     public void fetchPreMarketNews() {
         log.info("[CFO] Fetching pre-market news...");
         try {
             int count = newsAggregatorService.fetchAndStoreNews();
+            llmRefinementService.refineRecentArticles();
             log.info("[CFO] Pre-market news: {} new articles", count);
         } catch (Exception e) {
             log.error("[CFO] Pre-market news fetch failed: {}", e.getMessage());
         }
     }
 
-    @Scheduled(cron = "${cfo.news.fetch-cron:0 0/30 6-22 * * MON-SAT}")
-    public void fetchNewsJob() {
-        int count = newsAggregatorService.fetchAndStoreNews();
-        log.info("Fetched {} articles", count);
-
-        // Async: LLM reviews low-confidence articles in background
-        llmRefinementService.refineRecentArticles();
-    }
-    /** 4:00 PM IST — Post-market news fetch */
-    @Scheduled(cron = "${cfo.schedule.news.postmarket:0 0 16 * * MON-FRI}", zone = "Asia/Kolkata")
-    public void fetchPostMarketNews() {
-        log.info("[CFO] Fetching post-market news...");
-        try {
-            int count = newsAggregatorService.fetchAndStoreNews();
-            log.info("[CFO] Post-market news: {} new articles", count);
-        } catch (Exception e) {
-            log.error("[CFO] Post-market news fetch failed: {}", e.getMessage());
-        }
+    /**
+     * 7:15 AM IST — Sync Groww holdings so the morning brief has today's positions.
+     * Runs after news fetch (7:00) and before brief generation (7:30).
+     */
+    @Scheduled(cron = "0 15 7 * * MON-FRI", zone = "Asia/Kolkata")
+    public void syncPreMarket() {
+        syncGroww("pre-market");
     }
 
-    // ── Daily Brief ────────────────────────────────────────────────────────────
-
-    /** 7:30 AM IST — Generate morning CFO brief */
+    /**
+     * 7:30 AM IST — Generate morning CFO brief.
+     * At this point news (7:00) and Groww data (7:15) are already fresh.
+     * Uses a 2-hour cooldown so re-calling the endpoint mid-day produces a fresh brief.
+     */
     @Scheduled(cron = "0 30 7 * * MON-FRI", zone = "Asia/Kolkata")
     public void generateMorningBrief() {
         log.info("[CFO] Generating daily morning brief...");
         try {
             AiInsight brief = cfoAdvisorService.generateDailyBrief();
             log.info("[CFO] Morning brief generated: {}", brief.getTitle());
+            emailNotificationService.sendDailyBrief(brief);
         } catch (Exception e) {
             log.error("[CFO] Morning brief generation failed: {}", e.getMessage());
         }
     }
 
-    // ── Groww Portfolio Syncs (5x/day on market days) ─────────────────────────
+    // ── Intraday News (every 30 min, market hours) ────────────────────────────
+
+    @Scheduled(cron = "${cfo.news.fetch-cron:0 0/30 9-15 * * MON-FRI}", zone = "Asia/Kolkata")
+    public void fetchIntradayNews() {
+        int count = newsAggregatorService.fetchAndStoreNews();
+        log.info("[CFO] Intraday news fetch: {} new articles", count);
+        llmRefinementService.refineRecentArticles();
+    }
+
+    // ── Groww Portfolio Syncs ─────────────────────────────────────────────────
 
     /** 9:15 AM IST — Market open */
     @Scheduled(cron = "${cfo.schedule.sync.open:0 15 9 * * MON-FRI}", zone = "Asia/Kolkata")
@@ -89,10 +94,11 @@ public class CFOScheduler {
         syncGroww("market-open");
     }
 
-    /** 12:30 PM IST — Mid-session */
+    /** 12:30 PM IST — Mid-session sync then generate mid-day market insight */
     @Scheduled(cron = "0 30 12 * * MON-FRI", zone = "Asia/Kolkata")
-    public void syncMidSession() {
+    public void syncMidSessionAndInsight() {
         syncGroww("mid-session");
+        generateMarketInsight("Mid-Day");
     }
 
     /** 3:00 PM IST — Pre-close */
@@ -113,9 +119,53 @@ public class CFOScheduler {
         syncGroww("after-settlement");
     }
 
+    // ── Price Data + Post-Close Pipeline ─────────────────────────────────────
+    // Sequence: fetch prices (→ updates investments + snapshot) → post-market news → market insight
+
+    /**
+     * 4:00 PM IST — Fetch closing prices after NSE market close (3:30 PM).
+     * StockPriceService automatically updates Investment.currentPrice and rebuilds
+     * the portfolio snapshot after all symbols are fetched.
+     */
+    @Scheduled(cron = "${cfo.schedule.price.fetch:0 0 16 * * MON-FRI}", zone = "Asia/Kolkata")
+    public void fetchStockPrices() {
+        log.info("[CFO] Fetching stock price history (provider chain: {})...",
+                stockPriceService.getProviderChain());
+        try {
+            stockPriceService.fetchAndPersistPrices(defaultUserId);
+            log.info("[CFO] Stock price fetch complete, investments and snapshot updated");
+        } catch (Exception e) {
+            log.error("[CFO] Stock price fetch failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 4:15 PM IST — Fetch post-market news after prices are in.
+     */
+    @Scheduled(cron = "0 15 16 * * MON-FRI", zone = "Asia/Kolkata")
+    public void fetchPostMarketNews() {
+        log.info("[CFO] Fetching post-market news...");
+        try {
+            int count = newsAggregatorService.fetchAndStoreNews();
+            llmRefinementService.refineRecentArticles();
+            log.info("[CFO] Post-market news: {} new articles", count);
+        } catch (Exception e) {
+            log.error("[CFO] Post-market news fetch failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 4:30 PM IST — Generate post-close market insight.
+     * Prices (4:00), investments, portfolio snapshot, and post-market news (4:15) are all fresh.
+     */
+    @Scheduled(cron = "0 30 16 * * MON-FRI", zone = "Asia/Kolkata")
+    public void generatePostCloseInsight() {
+        generateMarketInsight("Post-Close");
+    }
+
     // ── After-Hours Digest ────────────────────────────────────────────────────
 
-    /** 6:00 PM IST — Generate after-hours insights + send email digest */
+    /** 6:00 PM IST — Full after-hours review + email digest */
     @Scheduled(cron = "0 0 18 * * MON-FRI", zone = "Asia/Kolkata")
     public void generateAfterHoursDigest() {
         log.info("[CFO] Generating after-hours insights and sending email digest...");
@@ -128,20 +178,6 @@ public class CFOScheduler {
             log.info("[CFO] After-hours digest sent");
         } catch (Exception e) {
             log.error("[CFO] After-hours digest failed: {}", e.getMessage());
-        }
-    }
-
-    // ── Price Data + Market Context ───────────────────────────────────────────
-
-    /** 4:00 PM IST — Fetch stock price history after NSE market close (3:30 PM) */
-    @Scheduled(cron = "${cfo.schedule.price.fetch:0 0 16 * * MON-FRI}", zone = "Asia/Kolkata")
-    public void fetchStockPrices() {
-        log.info("[CFO] Fetching stock price history (provider chain: {})...",
-                stockPriceService.getProviderChain());
-        try {
-            stockPriceService.fetchAndPersistPrices(defaultUserId);
-        } catch (Exception e) {
-            log.error("[CFO] Stock price fetch failed: {}", e.getMessage());
         }
     }
 
@@ -166,7 +202,17 @@ public class CFOScheduler {
         }
     }
 
-    // ── Helper ────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private void generateMarketInsight(String label) {
+        log.info("[CFO] Generating {} market insight...", label);
+        try {
+            AiInsight insight = cfoAdvisorService.generateMarketInsight(label);
+            log.info("[CFO] {} market insight generated: {}", label, insight.getTitle());
+        } catch (Exception e) {
+            log.error("[CFO] {} market insight failed: {}", label, e.getMessage());
+        }
+    }
 
     private void syncGroww(String checkpoint) {
         log.info("[CFO] Groww sync ({})...", checkpoint);

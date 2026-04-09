@@ -12,6 +12,8 @@ import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
+import org.amit.finwise.investment.model.Investment;
+import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.http.ResponseEntity;
@@ -36,6 +38,7 @@ public class CFOController {
     private final InvestorBehaviorService investorBehaviorService;
     private final RiskQuestionnaireRepository riskQuestionnaireRepository;
     private final StockPriceService stockPriceService;
+    private final InvestmentRepository investmentRepository;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -91,13 +94,67 @@ public class CFOController {
 
     /**
      * POST /api/cfo/sync/groww
-     * Trigger a manual Groww portfolio sync.
+     * Fetch holdings from Groww API, upsert into investments table, and save portfolio snapshot.
      */
     @PostMapping("/sync/groww")
     public ResponseEntity<PortfolioSnapshot> syncGroww() {
         PortfolioSnapshot snapshot = growwConnector.syncHoldings();
         return ResponseEntity.ok(snapshot);
     }
+
+    /**
+     * GET /api/cfo/holdings
+     * Returns all active holdings synced from Groww (and any other platform).
+     * Each entry includes symbol, sector, invested cost, current value, P&L, and exposure %.
+     */
+    @GetMapping("/holdings")
+    public ResponseEntity<List<HoldingSummary>> getHoldings() {
+        List<Investment> investments = investmentRepository.findActiveInvestments(defaultUserId);
+        if (investments.isEmpty()) return ResponseEntity.ok(List.of());
+
+        double totalCost = investments.stream()
+                .filter(i -> i.getTotalCost() != null)
+                .mapToDouble(i -> i.getTotalCost().doubleValue())
+                .sum();
+
+        List<HoldingSummary> summaries = investments.stream().map(inv -> {
+            double exposure = (totalCost > 0 && inv.getTotalCost() != null)
+                    ? (inv.getTotalCost().doubleValue() / totalCost) * 100 : 0;
+            return new HoldingSummary(
+                    inv.getSymbol(),
+                    inv.getName(),
+                    inv.getSector(),
+                    inv.getType() != null ? inv.getType().name() : null,
+                    inv.getQuantity(),
+                    inv.getCostPerUnit(),
+                    inv.getTotalCost(),
+                    inv.getCurrentPrice(),
+                    inv.getCurrentValue(),
+                    inv.getUnrealizedGainLoss(),
+                    inv.getGainLossPercentage(),
+                    Math.round(exposure * 100.0) / 100.0,
+                    inv.getPlatform()
+            );
+        }).toList();
+
+        return ResponseEntity.ok(summaries);
+    }
+
+    record HoldingSummary(
+            String symbol,
+            String name,
+            String sector,
+            String type,
+            java.math.BigDecimal quantity,
+            java.math.BigDecimal avgPrice,
+            java.math.BigDecimal totalCost,
+            java.math.BigDecimal currentPrice,
+            java.math.BigDecimal currentValue,
+            java.math.BigDecimal unrealizedPnl,
+            java.math.BigDecimal pnlPercent,
+            double exposurePercent,
+            String platform
+    ) {}
 
 
     // ── News ──────────────────────────────────────────────────────────────────
@@ -247,6 +304,18 @@ public class CFOController {
                     "providerChain", stockPriceService.getProviderChain()
             ));
         }
+    }
+
+    /**
+     * POST /api/cfo/prices/sync
+     * Syncs the latest fetched prices back to Investment records and rebuilds the portfolio snapshot.
+     * Use this if prices were already fetched but the Investment table wasn't updated (e.g. after a restart).
+     */
+    @PostMapping("/prices/sync")
+    public ResponseEntity<Map<String, String>> syncPricesToPortfolio() {
+        stockPriceService.updateInvestmentCurrentPrices(defaultUserId);
+        stockPriceService.rebuildPortfolioSnapshot(defaultUserId);
+        return ResponseEntity.ok(Map.of("status", "Investment prices and portfolio snapshot updated"));
     }
 
     // ── Investor Profile: Behavior + Questionnaire ───────────────────────────

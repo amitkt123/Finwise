@@ -14,20 +14,29 @@ import org.springframework.data.domain.PageRequest;
 import org.amit.finwise.cfo.repository.AiInsightRepository;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
+import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.repository.UserProfileRepository;
 import org.amit.finwise.cfo.service.llm.LLMMessage;
 import org.amit.finwise.cfo.service.llm.LLMProvider;
 import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
+import org.amit.finwise.investment.model.Investment;
+import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -46,6 +55,8 @@ public class CFOAdvisorService {
     private final InvestorBehaviorService behaviorService;
     private final PersonalizedRelevanceScorer personalizedRelevanceScorer;
     private final MarketContextService marketContextService;
+    private final InvestmentRepository investmentRepository;
+    private final StockPriceHistoryRepository stockPriceHistoryRepository;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -72,31 +83,51 @@ public class CFOAdvisorService {
 
     // ── Daily Brief ───────────────────────────────────────────────────────────
 
+    private static final int BRIEF_COOLDOWN_MINUTES = 120;
+
     /**
-     * Generate the daily CFO morning brief. Skips if already generated today.
+     * Generate the daily CFO morning brief.
+     * Regenerates if no brief exists today, or if the last one is older than BRIEF_COOLDOWN_MINUTES.
+     * This ensures a fresh brief is produced after each Groww sync + price fetch cycle,
+     * rather than serving a stale 7:30 AM brief all day.
      */
     @Transactional
     public AiInsight generateDailyBrief() {
         String userId = defaultUserId;
         LocalDate today = LocalDate.now();
 
-        // Skip if already generated today
         Optional<AiInsight> existing = insightRepository.findByUserIdAndDateAndType(
                 userId, today, AiInsight.InsightType.DAILY_BRIEF);
         if (existing.isPresent()) {
-            log.debug("Daily brief already generated for {}", today);
-            return existing.get();
+            boolean fresh = existing.get().getCreatedAt()
+                    .isAfter(LocalDateTime.now().minusMinutes(BRIEF_COOLDOWN_MINUTES));
+            if (fresh) {
+                log.debug("Daily brief is fresh (generated {}), skipping regeneration",
+                        existing.get().getCreatedAt());
+                return existing.get();
+            }
+            log.info("Daily brief is stale (generated {}), regenerating with latest data",
+                    existing.get().getCreatedAt());
         }
 
         String context = buildDailyBriefContext(userId);
         String userPrompt = """
                 Generate my daily CFO morning brief for %s.
                 Include:
-                1. **Portfolio Summary** - Key P&L metrics, day change
-                2. **Market & News Highlights** - Top 3-5 relevant stories affecting my holdings
-                3. **Goal Progress** - Quick status of my active financial goals
-                4. **Today's Action Items** - 2-3 specific actions I should consider today
-                5. **Risk Watch** - Any risks to monitor
+                1. **Portfolio Summary** — Key P&L metrics, day change, top holdings by exposure%%
+                2. **Market & News Highlights** — Top 3-5 relevant stories with SPECIFIC impact on my holdings (use exposure %% from context)
+                3. **Goal Progress** — Quick status of my active financial goals
+                4. **Action Items by Time Horizon**:
+                   - ⏳ Short-Term (0–7 days): Immediate actions
+                   - 📅 Medium-Term (1–3 months): Positioning decisions
+                   - 🧱 Long-Term (1+ year): Strategic allocation shifts
+                   For each action include: Confidence: X.X (0.0–1.0)
+                5. **Risk Scorecard** — Use the Market Risk Score from context; map risks to specific holdings
+
+                Rules:
+                - Reference exact holdings and exposure %% from context. Never say "no portfolio data".
+                - For each news → holding impact, state: "[Stock] has X%% exposure, [POSITIVE/NEGATIVE] impact due to [reason]"
+                - If Risk Score ≥ 70 → open with a CAUTION banner
 
                 Context:
                 %s
@@ -127,11 +158,17 @@ public class CFOAdvisorService {
         String userPrompt = """
                 Generate an after-hours portfolio review and insights for today (%s).
                 Include:
-                1. **Day's Performance** - How my portfolio performed today vs Nifty 50
-                2. **News Impact Analysis** - Which news items affected my specific holdings
-                3. **Opportunities Spotted** - Any buy/sell opportunities based on today's data
-                4. **Rebalancing Check** - Is my portfolio allocation still aligned with my goals?
-                5. **Tomorrow's Watch** - Key events or earnings to watch tomorrow
+                1. **Day's Performance** — Portfolio P&L vs Nifty 50; reference exact holdings from context
+                2. **News → Holdings Impact Table** — For each relevant news item, map it to a specific holding:
+                   | Holding | Sector | Exposure%% | News Catalyst | Impact | Confidence |
+                3. **Opportunities Spotted** — Buy/sell signals with Confidence: X.X (0.0–1.0)
+                4. **Rebalancing Check** — Use sector exposure from context; flag any sector > 35%% as concentrated
+                5. **Tomorrow's Watch** — Key events segmented by time horizon:
+                   - ⏳ 0–7 days | 📅 1–3 months
+
+                Rules:
+                - Always reference specific holdings and their exposure %% from context
+                - Every recommendation must include a Confidence score
 
                 Context:
                 %s
@@ -144,6 +181,58 @@ public class CFOAdvisorService {
                 .insightDate(today)
                 .insightType(AiInsight.InsightType.MARKET_INSIGHT)
                 .title("After-Hours Review - " + today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")))
+                .content(content)
+                .modelUsed(llmProvider.providerName())
+                .build();
+
+        return insightRepository.save(insight);
+    }
+
+    // ── Mid-Day / Post-Close Market Insight ──────────────────────────────────
+
+    /**
+     * Generate a MARKET_INSIGHT snapshot — called twice by the scheduler:
+     *   (a) 12:30 PM after mid-session Groww sync  → label = "Mid-Day"
+     *   (b) 4:30 PM after stock price fetch finishes → label = "Post-Close"
+     *
+     * Unlike generateDailyBrief(), there is no cooldown guard — the scheduler
+     * controls call frequency and every call should produce a fresh record so
+     * the UI can compare them.
+     *
+     * @param label short label embedded in the title, e.g. "Mid-Day" or "Post-Close"
+     */
+    @Transactional
+    public AiInsight generateMarketInsight(String label) {
+        String userId = defaultUserId;
+        LocalDate today = LocalDate.now();
+
+        String context = buildAfterHoursContext(userId);
+        String userPrompt = """
+                Generate a %s market insight for %s.
+                Include:
+                1. **Portfolio Snapshot** — Current value, unrealized P&L, day change vs invested cost
+                2. **Price Movers** — Top gainers and losers from my holdings today (use price trend data from context)
+                3. **News → Holdings Impact** — For each relevant news item map it to a holding:
+                   | Holding | Sector | Exposure%% | News Catalyst | Impact | Confidence |
+                4. **Intraday Observations** — Any circuit breaker hits, unusual volume, or anomalies
+                5. **Actionable Signals** — Concrete buy/hold/sell signals with Confidence: X.X (0.0–1.0)
+
+                Rules:
+                - Use exact prices and %% changes from the "Recent Price Trends" section in context.
+                - Reference holdings by symbol and exposure %%.
+                - If no circuit breakers or anomalies — explicitly state "No anomalies detected today."
+
+                Context:
+                %s
+                """.formatted(label, today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
+
+        String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
+
+        AiInsight insight = AiInsight.builder()
+                .userId(userId)
+                .insightDate(today)
+                .insightType(AiInsight.InsightType.MARKET_INSIGHT)
+                .title(label + " Market Insight - " + today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")))
                 .content(content)
                 .modelUsed(llmProvider.providerName())
                 .build();
@@ -252,11 +341,13 @@ public class CFOAdvisorService {
     private String buildDailyBriefContext(String userId) {
         StringBuilder ctx = new StringBuilder();
 
-        // Prepend market context summary line (Phase 7)
         appendMarketContextSummary(ctx, userId);
-
+        appendRiskScorecard(ctx, userId);
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
+        appendPortfolioHoldings(ctx, userId);
+        appendRecentPriceTrends(ctx, userId, 5);
+        appendSectorRiskMap(ctx, userId);
         appendActiveGoals(ctx, userId);
         appendRecentTransactions(ctx, userId, 7);
         appendTodaysNews(ctx, userId, 10);
@@ -268,7 +359,11 @@ public class CFOAdvisorService {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
+        appendRiskScorecard(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
+        appendPortfolioHoldings(ctx, userId);
+        appendRecentPriceTrends(ctx, userId, 5);
+        appendSectorRiskMap(ctx, userId);
         appendAfternoonSnapshots(ctx, userId);
         appendTodaysNews(ctx, userId, 15);
 
@@ -279,8 +374,12 @@ public class CFOAdvisorService {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
+        appendRiskScorecard(ctx, userId);
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
+        appendPortfolioHoldings(ctx, userId);
+        appendRecentPriceTrends(ctx, userId, 5);
+        appendSectorRiskMap(ctx, userId);
         appendActiveGoals(ctx, userId);
         appendRecentTransactions(ctx, userId, 30);
         appendTodaysNews(ctx, userId, 8);
@@ -433,6 +532,238 @@ public class CFOAdvisorService {
                 ctx.append(" — ").append(n.getSummary(), 0, Math.min(120, n.getSummary().length()));
             ctx.append("\n");
         }
+        ctx.append("\n");
+    }
+
+    /**
+     * Injects individual holdings with exposure %, sector, P&L, and sector breakdown.
+     * Falls back to the latest StockPriceHistory close if Investment.currentPrice is null
+     * (e.g. prices fetched but not yet synced back).
+     */
+    private void appendPortfolioHoldings(StringBuilder ctx, String userId) {
+        List<Investment> investments = investmentRepository.findActiveInvestments(userId);
+        if (investments.isEmpty()) return;
+
+        BigDecimal totalCost = investmentRepository.totalInvestmentCost(userId);
+        double total = totalCost.compareTo(BigDecimal.ZERO) > 0 ? totalCost.doubleValue() : 1.0;
+
+        // Pre-fetch latest price history for all symbols in one pass
+        Map<String, org.amit.finwise.cfo.model.StockPriceHistory> latestPriceMap = new HashMap<>();
+        for (Investment inv : investments) {
+            if (inv.getSymbol() != null) {
+                stockPriceHistoryRepository.findTopBySymbolOrderByPriceDateDesc(
+                        inv.getSymbol().toUpperCase()).ifPresent(h -> latestPriceMap.put(inv.getSymbol().toUpperCase(), h));
+            }
+        }
+
+        ctx.append("## Holdings (Active Positions)\n");
+        investments.stream()
+                .sorted(Comparator.comparing(
+                        inv -> inv.getTotalCost() != null ? inv.getTotalCost().negate() : BigDecimal.ZERO))
+                .forEach(inv -> {
+                    double exposure = inv.getTotalCost() != null
+                            ? (inv.getTotalCost().doubleValue() / total) * 100 : 0;
+
+                    // Resolve current value: prefer Investment field, fall back to price history
+                    String currentValueStr = "N/A";
+                    String pnlStr = "N/A";
+                    String dayChangeStr = "";
+                    if (inv.getCurrentValue() != null) {
+                        currentValueStr = "₹" + inv.getCurrentValue();
+                        pnlStr = inv.getGainLossPercentage() != null
+                                ? String.format("%+.1f%%", inv.getGainLossPercentage().doubleValue()) : "N/A";
+                    } else if (inv.getSymbol() != null) {
+                        org.amit.finwise.cfo.model.StockPriceHistory h = latestPriceMap.get(inv.getSymbol().toUpperCase());
+                        if (h != null && h.getClosePrice() != null && inv.getQuantity() != null) {
+                            BigDecimal cv = h.getClosePrice().multiply(inv.getQuantity())
+                                    .setScale(2, BigDecimal.ROUND_HALF_UP);
+                            currentValueStr = "₹" + cv + " (price: ₹" + h.getClosePrice() + " as of " + h.getPriceDate() + ")";
+                            if (inv.getTotalCost() != null && inv.getTotalCost().compareTo(BigDecimal.ZERO) != 0) {
+                                double pnlPct = cv.subtract(inv.getTotalCost()).doubleValue()
+                                        / inv.getTotalCost().doubleValue() * 100;
+                                pnlStr = String.format("%+.1f%%", pnlPct);
+                            }
+                        }
+                    }
+
+                    // Day change from price history
+                    if (inv.getSymbol() != null) {
+                        org.amit.finwise.cfo.model.StockPriceHistory h = latestPriceMap.get(inv.getSymbol().toUpperCase());
+                        if (h != null && h.getPriceChangePercent() != null) {
+                            dayChangeStr = " | Day: " + String.format("%+.2f%%", h.getPriceChangePercent());
+                            if (Boolean.TRUE.equals(h.getHitUpperCircuit()))
+                                dayChangeStr += " ⚡UPPER_CIRCUIT";
+                            else if (Boolean.TRUE.equals(h.getHitLowerCircuit()))
+                                dayChangeStr += " ⚡LOWER_CIRCUIT";
+                        }
+                    }
+
+                    ctx.append("- ").append(inv.getSymbol() != null ? inv.getSymbol() : inv.getName())
+                       .append(" [").append(inv.getSector() != null ? inv.getSector() : "?").append("]")
+                       .append(" | Invested: ₹").append(inv.getTotalCost())
+                       .append(" | Current: ").append(currentValueStr)
+                       .append(" | P&L: ").append(pnlStr)
+                       .append(dayChangeStr)
+                       .append(" | Exposure: ").append(String.format("%.1f%%", exposure))
+                       .append("\n");
+                });
+
+        // Sector breakdown
+        Map<String, Double> sectorExposure = new LinkedHashMap<>();
+        for (Investment inv : investments) {
+            if (inv.getSector() != null && inv.getTotalCost() != null) {
+                sectorExposure.merge(inv.getSector(), inv.getTotalCost().doubleValue() / total * 100, Double::sum);
+            }
+        }
+        if (!sectorExposure.isEmpty()) {
+            ctx.append("\n## Sector Exposure\n");
+            sectorExposure.entrySet().stream()
+                    .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                    .forEach(e -> ctx.append("- ").append(e.getKey())
+                            .append(": ").append(String.format("%.1f%%", e.getValue()))
+                            .append(e.getValue() > 40 ? " ⚠ CONCENTRATED" : "")
+                            .append("\n"));
+        }
+        ctx.append("\n");
+    }
+
+    /**
+     * Injects a recent N-day price trend table for the top holdings by cost.
+     * Gives the LLM concrete momentum data (not just today's snapshot) to reason about.
+     */
+    private void appendRecentPriceTrends(StringBuilder ctx, String userId, int days) {
+        List<Investment> investments = investmentRepository.findActiveInvestments(userId);
+        if (investments.isEmpty()) return;
+
+        // Focus on top 8 holdings by cost
+        List<Investment> topHoldings = investments.stream()
+                .filter(inv -> inv.getSymbol() != null && inv.getTotalCost() != null)
+                .sorted(Comparator.comparing(inv -> inv.getTotalCost().negate()))
+                .limit(8)
+                .toList();
+
+        if (topHoldings.isEmpty()) return;
+
+        LocalDate since = LocalDate.now().minusDays(days);
+        ctx.append("## Recent Price Trends (last ").append(days).append(" days)\n");
+
+        for (Investment inv : topHoldings) {
+            List<org.amit.finwise.cfo.model.StockPriceHistory> history =
+                    stockPriceHistoryRepository.findRecentBySymbol(inv.getSymbol().toUpperCase(), since);
+            if (history.isEmpty()) continue;
+
+            // history is ordered DESC (newest first)
+            ctx.append("- ").append(inv.getSymbol()).append(": ");
+            List<String> entries = new ArrayList<>();
+            for (int i = history.size() - 1; i >= 0; i--) {
+                org.amit.finwise.cfo.model.StockPriceHistory h = history.get(i);
+                String entry = h.getPriceDate().toString() + " ₹" + h.getClosePrice();
+                if (h.getPriceChangePercent() != null)
+                    entry += " (" + String.format("%+.1f%%", h.getPriceChangePercent()) + ")";
+                if (Boolean.TRUE.equals(h.getHitUpperCircuit())) entry += "⚡U";
+                else if (Boolean.TRUE.equals(h.getHitLowerCircuit())) entry += "⚡L";
+                entries.add(entry);
+            }
+            ctx.append(String.join(" → ", entries)).append("\n");
+        }
+        ctx.append("\n");
+    }
+
+    /**
+     * Maps today's top news articles to specific holdings using SectorCorrelationMap.
+     * Turns generic sector-level signals into holding-specific impact statements.
+     * Example: "Iran war news → Aviation -1.5 → IndiGo (8.2% of portfolio) → NEGATIVE"
+     */
+    private void appendSectorRiskMap(StringBuilder ctx, String userId) {
+        List<Investment> investments = investmentRepository.findActiveInvestments(userId);
+        if (investments.isEmpty()) return;
+
+        BigDecimal totalCost = investmentRepository.totalInvestmentCost(userId);
+        double total = totalCost.compareTo(BigDecimal.ZERO) > 0 ? totalCost.doubleValue() : 1.0;
+
+        List<NewsArticle> recentNews = newsArticleRepository.findRecentByRelevance(
+                LocalDate.now().minusDays(2));
+
+        record ImpactLine(String newsTitle, String symbol, String sector, double exposure, String direction, double strength) {}
+        List<ImpactLine> impactLines = new ArrayList<>();
+
+        for (NewsArticle article : recentNews.stream().limit(8).toList()) {
+            String categoryStr = article.getCategory() != null ? article.getCategory().name() : "";
+            Map<String, Double> sectorImpacts = SectorCorrelationMap.evaluate(
+                    article.getTitle(), categoryStr, article.getSentiment());
+
+            for (Investment inv : investments) {
+                if (inv.getSector() == null) continue;
+                Double impact = sectorImpacts.get(inv.getSector());
+                if (impact != null && Math.abs(impact) >= 1.0) {
+                    double exposure = inv.getTotalCost() != null
+                            ? (inv.getTotalCost().doubleValue() / total) * 100 : 0;
+                    String shortTitle = article.getTitle().length() > 60
+                            ? article.getTitle().substring(0, 60) + "…" : article.getTitle();
+                    impactLines.add(new ImpactLine(
+                            shortTitle,
+                            inv.getSymbol() != null ? inv.getSymbol() : inv.getName(),
+                            inv.getSector(), exposure,
+                            impact > 0 ? "POSITIVE" : "NEGATIVE",
+                            Math.abs(impact)));
+                }
+            }
+        }
+
+        if (!impactLines.isEmpty()) {
+            ctx.append("## News → Holdings Impact\n");
+            impactLines.stream()
+                    .sorted(Comparator.comparingDouble(ImpactLine::strength).reversed())
+                    .limit(10)
+                    .forEach(il -> ctx.append("- \"").append(il.newsTitle()).append("\"")
+                            .append(" → ").append(il.symbol())
+                            .append(" (").append(il.sector()).append(", ").append(String.format("%.1f%%", il.exposure())).append(" exposure)")
+                            .append(" | Impact: ").append(il.direction())
+                            .append(" [strength: ").append(String.format("%.1f", il.strength())).append("/2.0]\n"));
+            ctx.append("\n");
+        }
+    }
+
+    /**
+     * Computes a 0–100 market risk score and injects it into context.
+     * Derived from: negative article count + price volatility + portfolio trend + concentration.
+     */
+    private void appendRiskScorecard(StringBuilder ctx, String userId) {
+        MarketContextService.MarketContextSnapshot mc = marketContextService.getMarketContext(userId);
+
+        int riskScore = 0;
+        // Negative article count (0–30)
+        riskScore += Math.min(30, mc.highRelevanceNegativeCount3Days() * 5);
+        // Price volatility (0–30)
+        if (mc.priceBasedVolatility() > 0)
+            riskScore += (int) Math.min(30, mc.priceBasedVolatility() * 3);
+        // Portfolio declining (0–20)
+        if (mc.portfolioTrend() < 0)
+            riskScore += (int) Math.min(20, Math.abs(mc.portfolioTrend()) * 2);
+        // Sector concentration (0–20)
+        List<Investment> investments = investmentRepository.findActiveInvestments(userId);
+        BigDecimal totalCost = investmentRepository.totalInvestmentCost(userId);
+        if (!investments.isEmpty() && totalCost.compareTo(BigDecimal.ZERO) > 0) {
+            double total = totalCost.doubleValue();
+            Map<String, Double> sectorExp = new HashMap<>();
+            for (Investment inv : investments) {
+                if (inv.getSector() != null && inv.getTotalCost() != null)
+                    sectorExp.merge(inv.getSector(), inv.getTotalCost().doubleValue() / total, Double::sum);
+            }
+            double maxExposure = sectorExp.values().stream().mapToDouble(d -> d).max().orElse(0);
+            if (maxExposure > 0.50) riskScore += 20;
+            else if (maxExposure > 0.35) riskScore += 10;
+        }
+        riskScore = Math.min(100, riskScore);
+
+        String riskLevel = riskScore >= 70 ? "HIGH" : riskScore >= 40 ? "MEDIUM" : "LOW";
+
+        ctx.append("## Risk Scorecard\n");
+        ctx.append("Market Risk Score: ").append(riskScore).append("/100 (").append(riskLevel).append(")\n");
+        ctx.append("Volatility: ").append(mc.isVolatileMarket() ? "HIGH" : "NORMAL").append("\n");
+        ctx.append("Negative News (3d): ").append(mc.highRelevanceNegativeCount3Days()).append(" HIGH-relevance articles\n");
+        if (mc.priceBasedVolatility() > 0)
+            ctx.append("Price Volatility: ±").append(String.format("%.1f%%", mc.priceBasedVolatility())).append(" avg across holdings\n");
         ctx.append("\n");
     }
 
