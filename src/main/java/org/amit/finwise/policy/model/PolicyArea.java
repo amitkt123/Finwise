@@ -1,0 +1,13 @@
+package org.amit.finwise.policy.model;
+
+public enum PolicyArea {
+    MONETARY_POLICY,
+    SECURITIES_REGULATION,
+    TAXATION,
+    GOVERNMENT_SCHEME,
+    CORPORATE_COMPLIANCE,
+    CAPITAL_MARKETS,
+    MACRO_ECONOMY,
+    INVESTOR_PROTECTION,
+    OTHER
+}

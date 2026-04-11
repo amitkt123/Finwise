@@ -8,9 +8,6 @@ import org.amit.finwise.document.repository.DocumentUploadRepository;
 import org.amit.finwise.expense.model.Expense;
 import org.amit.finwise.expense.repository.ExpenseRepository;
 import org.amit.finwise.expense.service.ExpenseService;
-import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -49,6 +46,7 @@ public class DocumentParserService {
     private final ExpenseRepository expenseRepository;
     private final ExpenseService expenseService;
     private final BudgetMonitorService budgetMonitorService;
+    private final PdfTextExtractionService pdfTextExtractionService;
 
     @Value("${document.upload-dir:/tmp/finwise-docs}")
     private String uploadDir;
@@ -120,19 +118,7 @@ public class DocumentParserService {
     // ── Text Extraction ───────────────────────────────────────────────────────
 
     private String extractText(File file, String password) {
-        try {
-            PDDocument doc = (password != null && !password.isBlank())
-                    ? Loader.loadPDF(file, password)
-                    : Loader.loadPDF(file);
-            try (doc) {
-                return new PDFTextStripper().getText(doc);
-            }
-        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException e) {
-            log.warn("PDF is password-protected: {}", file.getName());
-            return null;
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to extract PDF text", e);
-        }
+        return pdfTextExtractionService.extract(file, password);
     }
 
     // ── Institution Detection ─────────────────────────────────────────────────

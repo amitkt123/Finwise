@@ -11,6 +11,8 @@ import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.retry.annotation.CircuitBreaker;
+import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

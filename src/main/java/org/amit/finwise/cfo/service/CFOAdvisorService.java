@@ -23,6 +23,7 @@ import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.amit.finwise.policy.service.PolicyIntelligenceService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,6 +58,7 @@ public class CFOAdvisorService {
     private final MarketContextService marketContextService;
     private final InvestmentRepository investmentRepository;
     private final StockPriceHistoryRepository stockPriceHistoryRepository;
+    private final PolicyIntelligenceService policyIntelligenceService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -77,6 +79,8 @@ public class CFOAdvisorService {
             - Consider Indian market context: NSE/BSE, SEBI regulations, RBI policies, Indian tax implications (LTCG/STCG).
             - Align advice with the user's risk appetite and financial goals.
             - If market news is negative for holdings, flag it clearly with suggested action.
+            - Treat official policy and regulatory sources as higher-trust evidence than media commentary.
+            - If policy evidence is provided, cite the authority and effective date where possible.
             - Format responses in clean Markdown with sections.
             - Do not make up numbers — only use figures from the provided context.
             """;
@@ -306,7 +310,7 @@ public class CFOAdvisorService {
     // ── Conversational Chat ────────────────────────────────────────────────────
 
     public String chat(List<LLMMessage> conversationHistory, String userMessage) {
-        String contextBlock = buildFullContext(defaultUserId);
+        String contextBlock = buildFullContext(defaultUserId, userMessage);
 
         // Inject context as first system message if history is empty
         List<LLMMessage> messages;
@@ -348,6 +352,7 @@ public class CFOAdvisorService {
         appendPortfolioHoldings(ctx, userId);
         appendRecentPriceTrends(ctx, userId, 5);
         appendSectorRiskMap(ctx, userId);
+        appendPolicyIntelligenceContext(ctx, userId, null, 6);
         appendActiveGoals(ctx, userId);
         appendRecentTransactions(ctx, userId, 7);
         appendTodaysNews(ctx, userId, 10);
@@ -364,13 +369,14 @@ public class CFOAdvisorService {
         appendPortfolioHoldings(ctx, userId);
         appendRecentPriceTrends(ctx, userId, 5);
         appendSectorRiskMap(ctx, userId);
+        appendPolicyIntelligenceContext(ctx, userId, null, 6);
         appendAfternoonSnapshots(ctx, userId);
         appendTodaysNews(ctx, userId, 15);
 
         return ctx.toString();
     }
 
-    private String buildFullContext(String userId) {
+    private String buildFullContext(String userId, String userMessage) {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
@@ -380,6 +386,7 @@ public class CFOAdvisorService {
         appendPortfolioHoldings(ctx, userId);
         appendRecentPriceTrends(ctx, userId, 5);
         appendSectorRiskMap(ctx, userId);
+        appendPolicyIntelligenceContext(ctx, userId, userMessage, 8);
         appendActiveGoals(ctx, userId);
         appendRecentTransactions(ctx, userId, 30);
         appendTodaysNews(ctx, userId, 8);
@@ -532,6 +539,53 @@ public class CFOAdvisorService {
                 ctx.append(" — ").append(n.getSummary(), 0, Math.min(120, n.getSummary().length()));
             ctx.append("\n");
         }
+        ctx.append("\n");
+    }
+
+    private void appendPolicyIntelligenceContext(StringBuilder ctx, String userId, String userMessage, int limit) {
+        PolicyIntelligenceService.AdvisorPolicyContext policyContext =
+                policyIntelligenceService.buildAdvisorContext(userId, userMessage, limit);
+
+        if (policyContext.documents().isEmpty()
+                && policyContext.impacts().isEmpty()
+                && policyContext.chunks().isEmpty()) {
+            return;
+        }
+
+        ctx.append("## Policy Intelligence\n");
+        if (!policyContext.impacts().isEmpty()) {
+            ctx.append("Relevant policy impacts:\n");
+            policyContext.impacts().stream().limit(limit).forEach(impact -> {
+                ctx.append("- ").append(impact.authority())
+                        .append(" | ").append(impact.subjectLabel())
+                        .append(" | ").append(impact.direction())
+                        .append(" | ").append(impact.horizon())
+                        .append(" | ").append(impact.impactSummary());
+                if (impact.effectiveFrom() != null) {
+                    ctx.append(" | Effective: ").append(impact.effectiveFrom());
+                }
+                if (impact.confidenceScore() != null) {
+                    ctx.append(" | Confidence: ").append(String.format("%.2f", impact.confidenceScore()));
+                }
+                ctx.append("\n");
+            });
+        }
+
+        if (!policyContext.chunks().isEmpty()) {
+            ctx.append("Policy source excerpts:\n");
+            policyContext.chunks().stream().limit(limit).forEach(chunk -> {
+                String excerpt = chunk.content().length() > 220
+                        ? chunk.content().substring(0, 220) + "..."
+                        : chunk.content();
+                ctx.append("- ").append(chunk.authority())
+                        .append(" | ").append(chunk.documentTitle());
+                if (chunk.citationLabel() != null && !chunk.citationLabel().isBlank()) {
+                    ctx.append(" | ").append(chunk.citationLabel());
+                }
+                ctx.append(" — ").append(excerpt).append("\n");
+            });
+        }
+
         ctx.append("\n");
     }
 
