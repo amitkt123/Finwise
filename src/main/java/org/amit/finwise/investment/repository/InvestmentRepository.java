@@ -12,7 +12,7 @@ import java.util.List;
 @Repository
 public interface InvestmentRepository extends JpaRepository<Investment, Long> {
 
-    @Query("SELECT i FROM Investment i WHERE i.userId = :userId AND i.isActive = true ORDER BY i.currentValue DESC")
+    @Query("SELECT i FROM Investment i WHERE i.userId = :userId AND i.isActive = true ORDER BY i.totalCost DESC")
     List<Investment> findActiveInvestments(@Param("userId") String userId);
 
     @Query("SELECT COALESCE(SUM(i.totalCost), 0) FROM Investment i WHERE i.userId = :userId AND i.isActive = true")

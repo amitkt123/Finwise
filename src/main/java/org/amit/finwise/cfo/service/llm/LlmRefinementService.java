@@ -11,8 +11,6 @@ import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.retry.annotation.CircuitBreaker;
-import org.springframework.retry.annotation.Retryable;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -102,11 +100,23 @@ public class LlmRefinementService {
 
         List<List<NewsArticle>> batches = partition(candidates, maxBatchSize);
         for (List<NewsArticle> batch : batches) {
-            try {
-                List<RefinedClassification> refinements = callLlm(batch);
-                applyRefinements(batch, refinements);
-            } catch (Exception e) {
-                log.error("LLM batch failed: {}", e.getMessage(), e);
+            boolean success = false;
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    List<RefinedClassification> refinements = callLlm(batch);
+                    applyRefinements(batch, refinements);
+                    success = true;
+                    break;
+                } catch (Exception e) {
+                    if (attempt < 2) {
+                        log.warn("LLM batch failed (attempt {}/2), retrying: {}", attempt, e.getMessage());
+                    } else {
+                        log.error("LLM batch failed after 2 attempts — skipping batch: {}", e.getMessage(), e);
+                    }
+                }
+            }
+            if (!success) {
+                log.debug("Skipped batch of {} articles — will retry next scheduled cycle", batch.size());
             }
         }
     }
@@ -158,14 +168,14 @@ public class LlmRefinementService {
         if (article.getRelatedSymbols() != null && !article.getRelatedSymbols().isBlank()
                 && confidence < confidenceThreshold) {
             log.debug("LLM candidate [SYMBOL+UNCERTAIN, conf={:.2f}]: '{}'",
-                    confidence, truncate(article.getTitle()));
+                    String.format("%.2f", confidence), truncate(article.getTitle()));
             return true;
         }
 
         // High relevance + uncertain
         if (score >= 70 && confidence < confidenceThreshold) {
-            log.debug("LLM candidate [HIGH_RELEVANCE+UNCERTAIN, score={}, conf={:.2f}]: '{}'",
-                    score, confidence, truncate(article.getTitle()));
+            log.debug("LLM candidate [HIGH_RELEVANCE+UNCERTAIN, score={}, conf={}]: '{}'",
+                    score, String.format("%.2f", confidence), truncate(article.getTitle()));
             return true;
         }
 
@@ -355,25 +365,60 @@ public class LlmRefinementService {
 
 
                 ═══════════════════════════════════════════════════════════════════
-                RESPONSE FORMAT — JSON ARRAY ONLY
+                RESPONSE FORMAT — STRICT JSON ARRAY
                 ═══════════════════════════════════════════════════════════════════
-                RESPOND ONLY WITH A JSON ARRAY. No markdown, no explanation, no prefix.
-                {
-                  "id": <0-based index>,
-                  "market_sentiment": "POSITIVE" | "NEGATIVE" | "NEUTRAL",
-                  "fundamental_sentiment": "POSITIVE" | "NEGATIVE" | "NEUTRAL",
-                  "entity_sentiments": { "<entity>": "POSITIVE"|"NEGATIVE"|"NEUTRAL", ... },
-                  "category": "<category>",
-                  "impact_type": "<impactType>",
-                  "impact_horizon": "<impactHorizon>",
-                  "sector_impact": "<sectorImpactString>",
-                  "symbols": ["NSE_SYMBOL"],
-                  "sectors": ["SectorName"],
-                  "impact_note": "<1 sentence: market catalyst + fundamental reality>",
-                  "actionability": <0-100>,
-                  "confidence": <0.0-1.0>,
-                  "tier2_overridden": <true if you corrected the gazetteer sectors>
-                }
+                Your ENTIRE response must be ONE valid JSON array and nothing else.
+                Start with [ and end with ]. One JSON object per article indexed from 0.
+                No markdown fences, no explanation, no prefix text, no trailing text.
+
+                CRITICAL field rules:
+                  - "symbols" is a flat list of strings: ["TCS", "INFY"]
+                    NEVER nest lists. NEVER create fields like symbols_list or symbols_list_list.
+                  - "sectors" is a flat list of strings: ["Banking", "IT"]
+                  - "entity_sentiments" is a flat object: {"TCS": "POSITIVE", "IT": "NEUTRAL"}
+                  - "market_sentiment", "fundamental_sentiment": exactly one of POSITIVE, NEGATIVE, NEUTRAL
+                  - "category": one value from the list above (e.g. EARNINGS)
+                  - "impact_type": one of MACRO, SECTOR, STOCK, POLICY, REGULATORY, MIXED
+                  - "impact_horizon": one of SHORT_TERM, MEDIUM_TERM, LONG_TERM
+                  - "actionability": integer 0–100
+                  - "confidence": decimal 0.0–1.0
+
+                Example for 2 articles:
+
+                [
+                  {
+                    "id": 0,
+                    "market_sentiment": "POSITIVE",
+                    "fundamental_sentiment": "POSITIVE",
+                    "entity_sentiments": {"HDFCBANK": "POSITIVE", "Banking": "POSITIVE"},
+                    "category": "EARNINGS",
+                    "impact_type": "STOCK",
+                    "impact_horizon": "SHORT_TERM",
+                    "sector_impact": "Banking:POSITIVE",
+                    "symbols": ["HDFCBANK"],
+                    "sectors": ["Banking"],
+                    "impact_note": "HDFC Bank Q3 beat on NII and asset quality — near-term price catalyst.",
+                    "actionability": 85,
+                    "confidence": 0.88,
+                    "tier2_overridden": false
+                  },
+                  {
+                    "id": 1,
+                    "market_sentiment": "NEGATIVE",
+                    "fundamental_sentiment": "NEGATIVE",
+                    "entity_sentiments": {"ONGC": "NEGATIVE", "Energy": "NEGATIVE"},
+                    "category": "POLICY",
+                    "impact_type": "SECTOR",
+                    "impact_horizon": "MEDIUM_TERM",
+                    "sector_impact": "Energy:NEGATIVE",
+                    "symbols": ["ONGC", "OIL"],
+                    "sectors": ["Energy"],
+                    "impact_note": "Windfall tax extension cuts upstream margins for ONGC and OIL through Q4.",
+                    "actionability": 70,
+                    "confidence": 0.82,
+                    "tier2_overridden": false
+                  }
+                ]
                 """;
     }
 
@@ -447,25 +492,54 @@ public class LlmRefinementService {
     private static final Pattern JSON_ARRAY_START = Pattern.compile("\\[\\s*\\{");
 
     private List<RefinedClassification> parseResponse(String content, int expectedCount) {
+        String cleaned = extractJsonFromResponse(content);
         try {
-            String cleaned = getString(content);
-
             List<RefinedClassification> results =
                     objectMapper.readValue(cleaned, new TypeReference<>() {});
-
             if (results.size() != expectedCount) {
                 log.warn("LLM returned {} results but expected {} — partial update will be applied",
                         results.size(), expectedCount);
             }
             return results;
-        } catch (Exception e) {
-            log.warn("Failed to parse LLM response ({}). Raw response follows:", e.getMessage());
-            log.warn("=== RAW LLM RESPONSE ===\n{}\n=== END ===", content);
+        } catch (Exception firstError) {
+            // ── Fallback 1: LLM returned a single object instead of an array ──────
+            if (cleaned.startsWith("{")) {
+                try {
+                    RefinedClassification single =
+                            objectMapper.readValue(cleaned, RefinedClassification.class);
+                    log.warn("LLM returned a single object instead of an array — wrapping it");
+                    return List.of(single);
+                } catch (Exception ignored) {}
+            }
+
+            // ── Fallback 2: truncated JSON — recover complete objects ─────────────
+            if (firstError.getMessage() != null && firstError.getMessage().contains("end-of-input")) {
+                log.warn("LLM response appears truncated, attempting partial recovery...");
+                try {
+                    // Find the last fully-closed object: ends with "}," or is the only object
+                    int lastCommaClose = cleaned.lastIndexOf("},");
+                    if (lastCommaClose > 0) {
+                        String truncFixed = cleaned.substring(0, lastCommaClose + 1) + "]";
+                        List<RefinedClassification> partial =
+                                objectMapper.readValue(truncFixed, new TypeReference<>() {});
+                        log.info("Recovered {}/{} results from truncated LLM response", partial.size(), expectedCount);
+                        return partial;
+                    }
+                } catch (Exception ignored) {}
+            }
+
+            log.warn("Failed to parse LLM response ({}). Raw response (first 500 chars): {}",
+                    firstError.getMessage(),
+                    content.length() > 500 ? content.substring(0, 500) + "..." : content);
             return List.of();
         }
     }
 
-    private static String getString(String content) {
+    /**
+     * Strips markdown fences, think-tags, and leading non-JSON text, then locates
+     * the start of the JSON array or object in the LLM response.
+     */
+    private static String extractJsonFromResponse(String content) {
         String cleaned = content.trim();
 
         // Strip markdown fences (```json ... ```)
@@ -481,7 +555,11 @@ public class LlmRefinementService {
         Matcher m = JSON_ARRAY_START.matcher(cleaned);
         if (m.find()) {
             cleaned = cleaned.substring(m.start());
+        } else if (cleaned.contains("{")) {
+            // No array start found — might be a bare object; trim to first {
+            cleaned = cleaned.substring(cleaned.indexOf('{'));
         }
+
         return cleaned;
     }
 
@@ -492,6 +570,27 @@ public class LlmRefinementService {
 
         for (RefinedClassification r : refinements) {
             if (r.id < 0 || r.id >= batch.size()) continue;
+
+            // Sanitize symbols — reject garbage like "symbols_list_list_list_..."
+            // NSE symbols are 1-20 chars, uppercase alphanumeric with optional - or &
+            if (r.symbols != null) {
+                r.symbols = r.symbols.stream()
+                        .filter(s -> s != null
+                                && !s.contains("_list")
+                                && !s.contains("_list_")
+                                && s.length() <= 20
+                                && s.matches("[A-Z0-9&.\\-]+"))
+                        .distinct()
+                        .toList();
+            }
+
+            // Sanitize sectors — reject obviously malformed values
+            if (r.sectors != null) {
+                r.sectors = r.sectors.stream()
+                        .filter(s -> s != null && !s.contains("_list") && s.length() <= 50)
+                        .distinct()
+                        .toList();
+            }
 
             NewsArticle article = batch.get(r.id);
             boolean changed = false;

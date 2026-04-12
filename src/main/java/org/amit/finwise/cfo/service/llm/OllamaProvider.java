@@ -4,8 +4,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -25,8 +27,17 @@ public class OllamaProvider implements LLMProvider {
         this.model = model;
         this.temperature = temperature;
         this.maxTokens = maxTokens;
+
+        // LLM calls can be very slow (30s–5min for large prompts on a local GPU).
+        // Without explicit timeouts the caller thread blocks indefinitely, which
+        // starves HikariCP and triggers "Thread starvation or clock leap" warnings.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(10));
+        factory.setReadTimeout(Duration.ofSeconds(180));   // 3 min — generous for local Ollama
+
         this.restClient = RestClient.builder()
                 .baseUrl(baseUrl)
+                .requestFactory(factory)
                 .defaultHeader("Content-Type", "application/json")
                 .build();
     }

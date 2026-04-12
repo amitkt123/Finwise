@@ -34,3 +34,7 @@ build/
 
 ## env ##
 .env
+
+.claude
+CLAUDE.md
+SKILLS.md

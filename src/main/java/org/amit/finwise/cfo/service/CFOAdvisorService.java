@@ -446,7 +446,9 @@ public class CFOAdvisorService {
     }
 
     private void appendPortfolioSnapshot(StringBuilder ctx, String userId) {
-        snapshotRepository.findTopByUserIdOrderBySnapshotTimeDesc(userId).ifPresent(s -> {
+        Optional<PortfolioSnapshot> snapshotOpt = snapshotRepository.findTopByUserIdOrderBySnapshotTimeDesc(userId);
+        if (snapshotOpt.isPresent()) {
+            PortfolioSnapshot s = snapshotOpt.get();
             ctx.append("## Portfolio (as of ").append(s.getSnapshotTime().format(DateTimeFormatter.ofPattern("dd MMM HH:mm"))).append(")\n");
             ctx.append("Total Invested: ₹").append(s.getTotalInvested()).append("\n");
             ctx.append("Current Value: ₹").append(s.getCurrentValue()).append("\n");
@@ -457,7 +459,26 @@ public class CFOAdvisorService {
                         .append(" (").append(s.getDayPnlPercent()).append("%)\n");
             }
             ctx.append("Holdings Count: ").append(s.getHoldingsCount()).append("\n\n");
-        });
+        } else {
+            // No Groww-synced snapshot — fall back to aggregated totals directly from investments table
+            BigDecimal totalCost = investmentRepository.totalInvestmentCost(userId);
+            BigDecimal totalValue = investmentRepository.totalPortfolioValue(userId);
+            BigDecimal unrealizedGains = investmentRepository.totalUnrealizedGains(userId);
+            long holdingsCount = investmentRepository.findActiveInvestments(userId).size();
+
+            if (holdingsCount > 0) {
+                log.warn("No PortfolioSnapshot found for user {}. Falling back to investment table aggregates.", userId);
+                ctx.append("## Portfolio (computed from investments — no Groww snapshot)\n");
+                ctx.append("Total Invested: ₹").append(totalCost).append("\n");
+                if (totalValue.compareTo(BigDecimal.ZERO) > 0) {
+                    ctx.append("Current Value: ₹").append(totalValue).append("\n");
+                    ctx.append("Unrealized P&L: ₹").append(unrealizedGains).append("\n");
+                }
+                ctx.append("Holdings Count: ").append(holdingsCount).append("\n\n");
+            } else {
+                log.warn("No portfolio data found for user {}. Investments table is empty and no snapshot exists.", userId);
+            }
+        }
     }
 
     private void appendAfternoonSnapshots(StringBuilder ctx, String userId) {

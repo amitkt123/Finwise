@@ -16,13 +16,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.net.HttpURLConnection;
 import java.net.URL;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -80,29 +83,59 @@ public class NewsAggregatorService {
 
     private int fetchFromRss(String sourceName, String rssUrl, NewsArticle.Category category, Set<String> userSymbols) {
         if (rssUrl == null || rssUrl.isBlank() || rssUrl.startsWith("${")) {
-            log.debug("Skipping source '{}': URL not configured ({})", sourceName, rssUrl);
+            log.debug("Skipping source '{}': URL not configured", sourceName);
             return 0;
         }
         int saved = 0;
         try {
-            URL url = new URL(rssUrl);
+            // Open connection with proper User-Agent so sites that block bots (403) are more
+            // likely to respond. Enforce per-source timeouts to prevent HikariPool starvation.
+            HttpURLConnection conn = (HttpURLConnection) new URL(rssUrl).openConnection();
+            conn.setRequestProperty("User-Agent",
+                    "Mozilla/5.0 (compatible; PersonalCFO/1.0; RSS reader)");
+            conn.setRequestProperty("Accept", "application/rss+xml, application/xml, text/xml, */*");
+            conn.setConnectTimeout(newsProperties.getFetchTimeoutMs());
+            conn.setReadTimeout(newsProperties.getFetchTimeoutMs());
+            conn.connect();
+
+            int httpCode = conn.getResponseCode();
+            if (httpCode == 403 || httpCode == 404 || httpCode == 410) {
+                log.warn("HTTP {} from '{}' ({}), skipping — consider disabling this source",
+                        httpCode, sourceName, rssUrl);
+                return 0;
+            }
+
             SyndFeedInput input = new SyndFeedInput();
             input.setAllowDoctypes(true);   // ET and some other Indian feeds include DOCTYPE declarations
-            SyndFeed feed = input.build(new XmlReader(url));
+            input.setXmlHealerOn(true);     // tolerates malformed XML (e.g. MOSPI, PIB encoding issues)
+            SyndFeed feed = input.build(new XmlReader(conn));
+
+            List<SyndEntry> entries = feed.getEntries();
+
+            // ── Batch dedup: one query for all URLs in this feed (replaces N per-article queries) ─
+            List<String> feedUrls = entries.stream()
+                    .map(SyndEntry::getLink)
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .collect(Collectors.toList());
+
+            Set<String> alreadyStored = feedUrls.isEmpty()
+                    ? Set.of()
+                    : new HashSet<>(newsArticleRepository.findExistingUrlsIn(feedUrls));
 
             int count = 0;
-            for (SyndEntry entry : feed.getEntries()) {
+            for (SyndEntry entry : entries) {
                 if (count >= newsProperties.getMaxArticlesPerSource()) break;
 
                 String articleUrl = entry.getLink();
-                LocalDate pubDate = entry.getPublishedDate() != null
-                        ? entry.getPublishedDate().toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-                        : LocalDate.now();
-
-                if (newsArticleRepository.existsByUrlAndPublishedDate(articleUrl, pubDate)) {
+                if (articleUrl == null || alreadyStored.contains(articleUrl)) {
                     count++;
                     continue;
                 }
+
+                LocalDate pubDate = entry.getPublishedDate() != null
+                        ? entry.getPublishedDate().toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+                        : LocalDate.now();
 
                 String title = entry.getTitle() != null ? entry.getTitle() : "";
                 String summary = entry.getDescription() != null ? entry.getDescription().getValue() : "";
@@ -115,15 +148,15 @@ public class NewsAggregatorService {
                                 : LocalDateTime.now(),
                         category, userSymbols);
 
-                NewsArticle saved_article = newsArticleRepository.save(article);
+                NewsArticle savedArticle = newsArticleRepository.save(article);
                 // Generate embedding asynchronously — does not block the fetch cycle
-                embeddingService.generateAndStore(saved_article.getId(),
-                        saved_article.getTitle(), saved_article.getSummary());
+                embeddingService.generateAndStore(savedArticle.getId(),
+                        savedArticle.getTitle(), savedArticle.getSummary());
                 saved++;
                 count++;
             }
         } catch (Exception e) {
-            log.warn("Failed to fetch RSS from {} ({}): {}", sourceName, rssUrl, e.getMessage());
+            log.warn("Failed to fetch RSS from '{}' ({}): {}", sourceName, rssUrl, e.getMessage());
             // Fallback: try Jsoup HTML scrape
             saved += fallbackHtmlScrape(sourceName, rssUrl, category, userSymbols);
         }
@@ -137,14 +170,25 @@ public class NewsAggregatorService {
                     .userAgent("Mozilla/5.0 (compatible; PersonalCFO/1.0)")
                     .get();
 
+            // Collect all candidate URLs first for batch dedup
+            List<org.jsoup.nodes.Element> elements = doc.select("h2 a, h3 a, .article-title a")
+                    .stream().limit(10).toList();
+
+            List<String> candidateUrls = elements.stream()
+                    .map(el -> el.absUrl("href"))
+                    .filter(u -> !u.isBlank())
+                    .collect(Collectors.toList());
+
+            Set<String> alreadyStored = candidateUrls.isEmpty()
+                    ? Set.of()
+                    : new HashSet<>(newsArticleRepository.findExistingUrlsIn(candidateUrls));
+
             int saved = 0;
-            // Grab all article headlines
-            for (org.jsoup.nodes.Element el : doc.select("h2 a, h3 a, .article-title a").stream().limit(10).toList()) {
+            for (org.jsoup.nodes.Element el : elements) {
                 String title = el.text().trim();
                 String url = el.absUrl("href");
 
-                if (title.isBlank() || url.isBlank()) continue;
-                if (newsArticleRepository.existsByUrlAndPublishedDate(url, LocalDate.now())) continue;
+                if (title.isBlank() || url.isBlank() || alreadyStored.contains(url)) continue;
 
                 NewsArticle article = buildArticle(sourceName, title, "", url,
                         LocalDate.now(), LocalDateTime.now(), category, userSymbols);

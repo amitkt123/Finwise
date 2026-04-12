@@ -20,6 +20,14 @@ public interface NewsArticleRepository extends JpaRepository<NewsArticle, Long> 
 
     boolean existsByUrlAndPublishedDate(String url, LocalDate publishedDate);
 
+    /**
+     * Batch existence check — returns only the URLs from the given list that are
+     * already stored. Used by NewsAggregatorService to replace per-article
+     * existsByUrlAndPublishedDate calls (N+1 → 1 query per feed).
+     */
+    @Query("SELECT n.url FROM NewsArticle n WHERE n.url IN :urls")
+    List<String> findExistingUrlsIn(@Param("urls") List<String> urls);
+
     // ── Queries for personalized scoring ─────────────────────────────────────
 
     /**
