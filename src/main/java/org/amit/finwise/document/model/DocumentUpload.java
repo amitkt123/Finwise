@@ -36,13 +36,16 @@ public class DocumentUpload {
 
     private String institution;
 
+    @Column(columnDefinition = "TEXT")
+    private String extractedText;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     @Builder.Default
     private ParseStatus parseStatus = ParseStatus.PENDING;
 
     @Builder.Default
-    private Integer expensesExtracted = 0;
+    private Integer parsedRecordsExtracted = 0;
 
     @Column(columnDefinition = "TEXT")
     private String errorMessage;

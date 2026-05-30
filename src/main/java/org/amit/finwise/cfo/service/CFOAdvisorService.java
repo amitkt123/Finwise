@@ -80,7 +80,9 @@ public class CFOAdvisorService {
             - Align advice with the user's risk appetite and financial goals.
             - If market news is negative for holdings, flag it clearly with suggested action.
             - Treat official policy and regulatory sources as higher-trust evidence than media commentary.
-            - If policy evidence is provided, cite the authority and effective date where possible.
+            - If policy evidence is provided, reason from the policy event card: what changed, effective date, affected party, transmission channel, binding level, and surprise.
+            - Do not collapse policy impact to one net sign when channels conflict; say MIXED and name the drivers.
+            - Cite the authority, reference, and effective date where possible.
             - Format responses in clean Markdown with sections.
             - Do not make up numbers — only use figures from the provided context.
             """;
@@ -568,25 +570,47 @@ public class CFOAdvisorService {
                 policyIntelligenceService.buildAdvisorContext(userId, userMessage, limit);
 
         if (policyContext.documents().isEmpty()
-                && policyContext.impacts().isEmpty()
+                && policyContext.eventCards().isEmpty()
                 && policyContext.chunks().isEmpty()) {
             return;
         }
 
         ctx.append("## Policy Intelligence\n");
-        if (!policyContext.impacts().isEmpty()) {
-            ctx.append("Relevant policy impacts:\n");
-            policyContext.impacts().stream().limit(limit).forEach(impact -> {
-                ctx.append("- ").append(impact.authority())
-                        .append(" | ").append(impact.subjectLabel())
-                        .append(" | ").append(impact.direction())
-                        .append(" | ").append(impact.horizon())
+        if (!policyContext.eventCards().isEmpty()) {
+            ctx.append("Policy event cards:\n");
+            policyContext.eventCards().stream().limit(limit).forEach(impact -> {
+                ctx.append("- Event: ").append(impact.authority())
+                        .append(" ").append(impact.documentType())
+                        .append(" | Force: ").append(impact.bindingLevel())
+                        .append(" | Ref: ").append(impact.sourceReference() != null ? impact.sourceReference() : impact.documentTitle())
+                        .append("\n  What changed: ").append(impact.actionType() != null ? impact.actionType() : "UNKNOWN")
+                        .append(" affecting ").append(impact.subjectLabel());
+                if (impact.affectedParty() != null && !impact.affectedParty().isBlank()) {
+                    ctx.append(" | Who: ").append(impact.affectedParty());
+                }
+                ctx.append("\n  Mechanism: ")
+                        .append(impact.transmissionChannel() != null ? impact.transmissionChannel() : "UNKNOWN")
+                        .append(" | Direction: ").append(impact.direction())
+                        .append(" | Horizon: ").append(impact.horizon())
                         .append(" | ").append(impact.impactSummary());
                 if (impact.effectiveFrom() != null) {
-                    ctx.append(" | Effective: ").append(impact.effectiveFrom());
+                    ctx.append("\n  Effective: ").append(impact.effectiveFrom());
+                }
+                if (impact.implementationSummary() != null && !impact.implementationSummary().isBlank()) {
+                    ctx.append(" | Implementation: ").append(impact.implementationSummary());
+                }
+                if (impact.surpriseClassification() != null) {
+                    ctx.append("\n  Surprise: ").append(impact.surpriseClassification());
+                }
+                if (impact.legalForceRank() != null || impact.marketMovingPower() != null) {
+                    ctx.append(" | LegalForce: ").append(impact.legalForceRank() != null ? impact.legalForceRank() : "n/a")
+                            .append(" | MarketMovingPower: ").append(impact.marketMovingPower() != null ? impact.marketMovingPower() : "n/a");
                 }
                 if (impact.confidenceScore() != null) {
                     ctx.append(" | Confidence: ").append(String.format("%.2f", impact.confidenceScore()));
+                }
+                if (impact.falsificationSignal() != null && !impact.falsificationSignal().isBlank()) {
+                    ctx.append("\n  Watch/Falsify: ").append(impact.falsificationSignal());
                 }
                 ctx.append("\n");
             });

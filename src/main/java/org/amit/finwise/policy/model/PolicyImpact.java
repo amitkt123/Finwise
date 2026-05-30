@@ -47,6 +47,17 @@ public class PolicyImpact {
     private String subjectLabel;
 
     @Enumerated(EnumType.STRING)
+    @Column(name = "action_type", length = 50)
+    private PolicyActionType actionType;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "transmission_channel", length = 50)
+    private PolicyTransmissionChannel transmissionChannel;
+
+    @Column(name = "affected_party", length = 300)
+    private String affectedParty;
+
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
     private PolicyImpactDirection direction;
 
@@ -60,6 +71,19 @@ public class PolicyImpact {
     @Column(name = "effective_to")
     private LocalDate effectiveTo;
 
+    @Column(name = "implementation_summary", columnDefinition = "TEXT")
+    private String implementationSummary;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "surprise_classification", length = 50)
+    private PolicySurpriseClassification surpriseClassification;
+
+    @Column(name = "legal_force_rank")
+    private Integer legalForceRank;
+
+    @Column(name = "market_moving_power")
+    private Integer marketMovingPower;
+
     @Column(name = "confidence_score")
     private Double confidenceScore;
 
@@ -68,6 +92,9 @@ public class PolicyImpact {
 
     @Column(name = "reasoning_note", columnDefinition = "TEXT")
     private String reasoningNote;
+
+    @Column(name = "falsification_signal", columnDefinition = "TEXT")
+    private String falsificationSignal;
 
     @Column(name = "tags_csv", length = 1000)
     private String tagsCsv;

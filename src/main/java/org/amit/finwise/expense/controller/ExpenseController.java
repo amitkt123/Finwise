@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import org.amit.finwise.budget.service.BudgetMonitorService;
 import org.amit.finwise.expense.model.Expense;
 import org.amit.finwise.expense.repository.ExpenseRepository;
+import org.amit.finwise.expense.service.ExpenseDocumentIngestionService;
 import org.amit.finwise.expense.service.ExpenseService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
@@ -21,6 +22,7 @@ import java.util.Map;
 public class ExpenseController {
 
     private final ExpenseService expenseService;
+    private final ExpenseDocumentIngestionService expenseDocumentIngestionService;
     private final BudgetMonitorService budgetMonitorService;
     private final ExpenseRepository expenseRepository;
 
@@ -43,6 +45,12 @@ public class ExpenseController {
         Expense expense = expenseService.parseAndRecordSMSExpense(userId, smsContent);
         budgetMonitorService.updateBudgetForExpense(userId, expense);
         return ResponseEntity.ok(expense);
+    }
+
+    @PostMapping("/expense/import/document/{documentId}")
+    public ResponseEntity<ExpenseDocumentIngestionService.ImportResult> importDocumentExpenses(
+            @PathVariable Long documentId) {
+        return ResponseEntity.ok(expenseDocumentIngestionService.importDocument(documentId));
     }
 
     @GetMapping("/expense/summary")

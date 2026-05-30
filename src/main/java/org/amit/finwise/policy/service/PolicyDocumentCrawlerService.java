@@ -6,7 +6,7 @@ import com.rometools.rome.io.SyndFeedInput;
 import com.rometools.rome.io.XmlReader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.amit.finwise.document.service.PdfTextExtractionService;
+import org.amit.finwise.document.service.DocumentParserService;
 import org.amit.finwise.policy.config.PolicySourceProperties;
 import org.amit.finwise.policy.model.*;
 import org.jsoup.Jsoup;
@@ -71,7 +71,7 @@ public class PolicyDocumentCrawlerService {
     };
 
     private final PolicySourceProperties properties;
-    private final PdfTextExtractionService pdfTextExtractionService;
+    private final DocumentParserService documentParserService;
     private final PolicyIntelligenceService policyIntelligenceService;
 
     @Transactional
@@ -275,7 +275,7 @@ public class PolicyDocumentCrawlerService {
                                                SyndEntry entry) {
         byte[] bytes = downloadBytes(pdfUrl);
         persistArtifact(pdfUrl, bytes);
-        String text = pdfTextExtractionService.extract(new ByteArrayInputStream(bytes), null);
+        String text = documentParserService.parseBytes(bytes, null, fallbackTitle).getExtractedText();
         return buildPayloadFromText(
                 config,
                 fallbackTitle,
@@ -649,6 +649,15 @@ public class PolicyDocumentCrawlerService {
             } catch (Exception ignored) {
             }
         }
+        if (documentType == PolicyDocumentType.ACT) return PolicyBindingLevel.LAW;
+        if (documentType == PolicyDocumentType.RULE) return PolicyBindingLevel.RULE;
+        if (documentType == PolicyDocumentType.MASTER_DIRECTION) return PolicyBindingLevel.REGULATION;
+        if (documentType == PolicyDocumentType.CIRCULAR || documentType == PolicyDocumentType.NOTIFICATION) {
+            return PolicyBindingLevel.CIRCULAR_NOTIFICATION;
+        }
+        if (authority == PolicyAuthority.RBI && documentType == PolicyDocumentType.MONETARY_POLICY) {
+            return PolicyBindingLevel.MARKET_MOVING_GUIDANCE;
+        }
         if (authority == PolicyAuthority.NASSCOM) return PolicyBindingLevel.INDUSTRY_BODY;
         if (documentType == PolicyDocumentType.PRESS_RELEASE || documentType == PolicyDocumentType.REPORT) {
             return PolicyBindingLevel.INFORMATIONAL;
@@ -745,6 +754,34 @@ public class PolicyDocumentCrawlerService {
                     "Derived automatically from RBI monetary policy language.",
                     List.of("auto-derived", "rbi")
             ));
+            addImpact(impacts, "factor:rate-sensitive", new PolicyIntelligenceService.PolicyImpactDraft(
+                    policyArea,
+                    PolicySubjectType.FACTOR,
+                    "Rate Sensitive",
+                    "Rate Sensitive",
+                    PolicyImpactDirection.MIXED,
+                    PolicyImpactHorizon.SHORT_TERM,
+                    effectiveDate,
+                    null,
+                    0.78,
+                    "RBI rate-path communication changes discount rates, credit costs, and valuation support for rate-sensitive assets.",
+                    "Mapped as a factor exposure because the transmission is through yields and borrowing costs, not only sector labels.",
+                    List.of("auto-derived", "rbi", "rate-sensitive")
+            ));
+            addImpact(impacts, "asset:debt", new PolicyIntelligenceService.PolicyImpactDraft(
+                    policyArea,
+                    PolicySubjectType.ASSET_CLASS,
+                    "Debt",
+                    "Debt",
+                    PolicyImpactDirection.MIXED,
+                    PolicyImpactHorizon.SHORT_TERM,
+                    effectiveDate,
+                    null,
+                    0.77,
+                    "RBI rate-path changes affect bond yields, mark-to-market debt returns, and reinvestment rates.",
+                    "Mapped as an asset-class impact because fixed-income portfolios react mechanically to the rates curve.",
+                    List.of("auto-derived", "rbi", "debt")
+            ));
             addImpact(impacts, "sector:realty", new PolicyIntelligenceService.PolicyImpactDraft(
                     policyArea,
                     PolicySubjectType.SECTOR,
@@ -775,6 +812,20 @@ public class PolicyDocumentCrawlerService {
                     "SEBI circulars often alter compliance, disclosures, investor protection, and market-process rules.",
                     "Generic auto-derived impact for SEBI-origin retail-market documents.",
                     List.of("auto-derived", "sebi")
+            ));
+            addImpact(impacts, "market-structure:listed-markets", new PolicyIntelligenceService.PolicyImpactDraft(
+                    policyArea,
+                    PolicySubjectType.MARKET_STRUCTURE,
+                    "Listed Markets",
+                    "Listed Markets",
+                    PolicyImpactDirection.MIXED,
+                    PolicyImpactHorizon.MEDIUM_TERM,
+                    effectiveDate,
+                    null,
+                    0.68,
+                    "SEBI changes can alter who can trade, disclose, distribute, or intermediate in listed markets.",
+                    "Mapped as a market-structure exposure because compliance and access mechanics may matter more than sector beta.",
+                    List.of("auto-derived", "sebi", "market-structure")
             ));
         }
 
@@ -965,7 +1016,168 @@ public class PolicyDocumentCrawlerService {
             ));
         }
 
-        return new ArrayList<>(impacts.values());
+        return impacts.values().stream()
+                .map(impact -> enrichPolicyEvent(impact, authority, policyArea, haystack, effectiveDate))
+                .toList();
+    }
+
+    private PolicyIntelligenceService.PolicyImpactDraft enrichPolicyEvent(
+            PolicyIntelligenceService.PolicyImpactDraft impact,
+            PolicyAuthority authority,
+            PolicyArea policyArea,
+            String haystack,
+            LocalDate effectiveDate) {
+
+        PolicyActionType actionType = inferActionType(authority, policyArea, impact.subjectType(), haystack);
+        PolicyTransmissionChannel channel = inferTransmissionChannel(impact.subjectType(), impact.subjectKey(), actionType, haystack);
+        PolicySurpriseClassification surprise = inferSurpriseClassification(authority, actionType, haystack);
+        String affectedParty = inferAffectedParty(impact.subjectType(), impact.subjectLabel(), actionType);
+        String implementation = inferImplementationSummary(effectiveDate, haystack);
+        String falsification = inferFalsificationSignal(channel, actionType);
+
+        return new PolicyIntelligenceService.PolicyImpactDraft(
+                impact.policyArea(),
+                impact.subjectType(),
+                impact.subjectKey(),
+                impact.subjectLabel(),
+                actionType,
+                channel,
+                affectedParty,
+                impact.direction(),
+                impact.horizon(),
+                impact.effectiveFrom(),
+                impact.effectiveTo(),
+                implementation,
+                surprise,
+                null,
+                null,
+                impact.confidenceScore(),
+                impact.impactSummary(),
+                impact.reasoningNote(),
+                falsification,
+                impact.tags()
+        );
+    }
+
+    private PolicyActionType inferActionType(PolicyAuthority authority,
+                                             PolicyArea policyArea,
+                                             PolicySubjectType subjectType,
+                                             String haystack) {
+        if (containsAny(haystack, "repo rate", "policy rate", "standing deposit facility", "marginal standing facility")) {
+            return PolicyActionType.RATE_CHANGE;
+        }
+        if (containsAny(haystack, "liquidity", "open market operation", "omo", "crr", "sdf", "vrro", "vrr")) {
+            return PolicyActionType.LIQUIDITY_OPERATION;
+        }
+        if (containsAny(haystack, "risk weight", "capital adequacy", "capital requirement")) {
+            return PolicyActionType.CAPITAL_REQUIREMENT;
+        }
+        if (containsAny(haystack, "disclosure", "reporting", "filed", "submit")) {
+            return PolicyActionType.DISCLOSURE_RULE;
+        }
+        if (containsAny(haystack, "tds", "tax deducted")) return PolicyActionType.TDS_CHANGE;
+        if (containsAny(haystack, "tax rate", "stcg", "ltcg", "capital gain", "surcharge", "stt")) {
+            return PolicyActionType.TAX_RATE_CHANGE;
+        }
+        if (containsAny(haystack, "eligibility", "eligible", "threshold", "limit enhanced", "limit reduced")) {
+            return PolicyActionType.ELIGIBILITY_CHANGE;
+        }
+        if (containsAny(haystack, "lock-in", "lock in", "holding period")) return PolicyActionType.LOCKIN_CHANGE;
+        if (containsAny(haystack, "position limit", "exposure limit", "trading limit")) return PolicyActionType.POSITION_LIMIT_CHANGE;
+        if (subjectType == PolicySubjectType.MARKET_STRUCTURE || authority == PolicyAuthority.SEBI) {
+            return PolicyActionType.MARKET_STRUCTURE_CHANGE;
+        }
+        if (policyArea == PolicyArea.GOVERNMENT_SCHEME) return PolicyActionType.GOVERNMENT_SCHEME;
+        if (containsAny(haystack, "guidance", "outlook", "stance")) return PolicyActionType.GUIDANCE_SIGNAL;
+        return PolicyActionType.OTHER;
+    }
+
+    private PolicyTransmissionChannel inferTransmissionChannel(PolicySubjectType subjectType,
+                                                               String subjectKey,
+                                                               PolicyActionType actionType,
+                                                               String haystack) {
+        if (actionType == PolicyActionType.RATE_CHANGE) return PolicyTransmissionChannel.DISCOUNT_RATE;
+        if (actionType == PolicyActionType.LIQUIDITY_OPERATION) return PolicyTransmissionChannel.LIQUIDITY_MARKET_ACCESS;
+        if (actionType == PolicyActionType.CAPITAL_REQUIREMENT) return PolicyTransmissionChannel.CREDIT_SUPPLY;
+        if (actionType == PolicyActionType.TAX_RATE_CHANGE || actionType == PolicyActionType.TDS_CHANGE) {
+            return PolicyTransmissionChannel.CASHFLOWS_AFTER_TAX;
+        }
+        if (actionType == PolicyActionType.DISCLOSURE_RULE || actionType == PolicyActionType.REPORTING_REQUIREMENT) {
+            return PolicyTransmissionChannel.COMPLIANCE_COST;
+        }
+        if (actionType == PolicyActionType.MARKET_STRUCTURE_CHANGE || subjectType == PolicySubjectType.MARKET_STRUCTURE) {
+            return PolicyTransmissionChannel.MARKET_STRUCTURE;
+        }
+        if (containsAny(subjectKey == null ? "" : subjectKey.toLowerCase(Locale.ENGLISH), "bank", "nbfc", "realty")) {
+            return PolicyTransmissionChannel.CREDIT_COST;
+        }
+        if (containsAny(haystack, "earnings", "margin", "profitability", "cost")) {
+            return PolicyTransmissionChannel.EARNINGS;
+        }
+        return PolicyTransmissionChannel.RISK_PREMIUM_REGIME;
+    }
+
+    private PolicySurpriseClassification inferSurpriseClassification(PolicyAuthority authority,
+                                                                     PolicyActionType actionType,
+                                                                     String haystack) {
+        if (containsAny(haystack, "unexpected", "surprise", "sharply", "higher than", "lower than")) {
+            if (containsAny(haystack, "tighten", "hike", "increase", "stricter")) return PolicySurpriseClassification.HAWKISH_SURPRISE;
+            if (containsAny(haystack, "cut", "reduce", "easier", "relax")) return PolicySurpriseClassification.DOVISH_SURPRISE;
+            return PolicySurpriseClassification.IMPLEMENTATION_SURPRISE;
+        }
+        if (containsAny(haystack, "stricter", "tighten", "enhanced surveillance", "additional requirement")) {
+            return PolicySurpriseClassification.STRICTER_THAN_EXPECTED;
+        }
+        if (containsAny(haystack, "relaxation", "eased", "extended timeline", "defer")) {
+            return PolicySurpriseClassification.EASIER_THAN_EXPECTED;
+        }
+        if (authority == PolicyAuthority.RBI && actionType == PolicyActionType.GUIDANCE_SIGNAL) {
+            return PolicySurpriseClassification.MARKET_MOVING_GUIDANCE;
+        }
+        return PolicySurpriseClassification.UNKNOWN;
+    }
+
+    private String inferAffectedParty(PolicySubjectType subjectType, String subjectLabel, PolicyActionType actionType) {
+        return switch (subjectType) {
+            case SECTOR -> subjectLabel + " companies and investors with sector exposure";
+            case ASSET_CLASS -> "Investors allocated to " + subjectLabel;
+            case FACTOR -> "Portfolios exposed to " + subjectLabel + " factors";
+            case TAX_TOPIC -> "Taxpayers and investors whose realised returns depend on " + subjectLabel;
+            case MARKET_STRUCTURE -> "Brokers, exchanges, intermediaries, issuers, and active market participants";
+            case REGULATED_ENTITY_TYPE -> subjectLabel + " regulated entities";
+            default -> actionType == PolicyActionType.GOVERNMENT_SCHEME
+                    ? "Scheme beneficiaries, suppliers, and investors in linked themes"
+                    : subjectLabel;
+        };
+    }
+
+    private String inferImplementationSummary(LocalDate effectiveDate, String haystack) {
+        String dateText = effectiveDate != null ? "Effective from " + effectiveDate : "Effective date not extracted";
+        if (containsAny(haystack, "phase", "phased", "transition")) {
+            return dateText + "; implementation appears phased or transitional.";
+        }
+        if (containsAny(haystack, "grandfather", "existing investment", "existing contracts")) {
+            return dateText + "; check grandfathering for existing holdings or contracts.";
+        }
+        if (containsAny(haystack, "with immediate effect", "immediate effect")) {
+            return "Applies with immediate effect; verify operational circulars for execution details.";
+        }
+        return dateText + "; no explicit phase-in or grandfathering detected by rules.";
+    }
+
+    private String inferFalsificationSignal(PolicyTransmissionChannel channel, PolicyActionType actionType) {
+        return switch (channel) {
+            case DISCOUNT_RATE -> "Watch bond yields, OIS expectations, bank deposit/loan repricing, and RBI commentary for pass-through.";
+            case CREDIT_SUPPLY -> "Watch bank credit growth, risk-weighted asset disclosures, and loan approval standards.";
+            case CREDIT_COST -> "Watch lending rates, housing demand, EMI-sensitive sales, and delinquency trends.";
+            case CASHFLOWS_AFTER_TAX -> "Watch final Finance Act/notification text, broker tax computation notes, and effective-date clarifications.";
+            case LIQUIDITY_MARKET_ACCESS -> "Watch money-market rates, system liquidity, bid-ask spreads, and issuance/trading volumes.";
+            case COMPLIANCE_COST -> "Watch implementation FAQs, compliance deadlines, and regulated-entity cost disclosures.";
+            case MARKET_STRUCTURE -> "Watch exchange circulars, broker process changes, volumes, open interest, and participation restrictions.";
+            default -> actionType == PolicyActionType.GOVERNMENT_SCHEME
+                    ? "Watch budget allocation, tendering, beneficiary uptake, and execution milestones."
+                    : "Watch follow-up circulars, market pricing, and affected-party behaviour for confirmation.";
+        };
     }
 
     private LocalDate inferEffectiveDate(Document doc, LocalDate fallback) {

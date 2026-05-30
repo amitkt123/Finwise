@@ -10,13 +10,21 @@ public record PolicyImpactPayload(
         PolicySubjectType subjectType,
         String subjectKey,
         String subjectLabel,
+        PolicyActionType actionType,
+        PolicyTransmissionChannel transmissionChannel,
+        String affectedParty,
         PolicyImpactDirection direction,
         PolicyImpactHorizon horizon,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
+        String implementationSummary,
+        PolicySurpriseClassification surpriseClassification,
+        Integer legalForceRank,
+        Integer marketMovingPower,
         Double confidenceScore,
         String impactSummary,
         String reasoningNote,
+        String falsificationSignal,
         List<String> tags
 ) {
     public PolicyIntelligenceService.PolicyImpactDraft toDraft() {
@@ -25,13 +33,21 @@ public record PolicyImpactPayload(
                 subjectType,
                 subjectKey,
                 subjectLabel,
+                actionType,
+                transmissionChannel,
+                affectedParty,
                 direction,
                 horizon,
                 effectiveFrom,
                 effectiveTo,
+                implementationSummary,
+                surpriseClassification,
+                legalForceRank,
+                marketMovingPower,
                 confidenceScore,
                 impactSummary,
                 reasoningNote,
+                falsificationSignal,
                 tags
         );
     }

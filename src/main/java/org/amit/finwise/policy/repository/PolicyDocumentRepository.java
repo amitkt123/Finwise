@@ -32,13 +32,24 @@ public interface PolicyDocumentRepository extends JpaRepository<PolicyDocument, 
             @Param("authority") PolicyAuthority authority,
             @Param("status") PolicyDocumentStatus status);
 
-    @Query("""
-            SELECT d FROM PolicyDocument d
-            WHERE lower(d.title) LIKE lower(concat('%', :query, '%'))
-               OR lower(coalesce(d.summary, '')) LIKE lower(concat('%', :query, '%'))
-               OR lower(coalesce(d.tagsCsv, '')) LIKE lower(concat('%', :query, '%'))
-               OR lower(coalesce(d.affectedSectorsCsv, '')) LIKE lower(concat('%', :query, '%'))
-            ORDER BY d.updatedAt DESC
-            """)
+    @Query(value = """
+            WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
+            SELECT d.*
+            FROM policy_documents d
+            CROSS JOIN q
+            WHERE (
+                    setweight(to_tsvector('simple', coalesce(d.title, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(d.summary, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(d.tags_csv, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(d.affected_sectors_csv, '')), 'A')
+            ) @@ q.query
+            ORDER BY ts_rank_cd(
+                    setweight(to_tsvector('simple', coalesce(d.title, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(d.summary, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(d.tags_csv, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(d.affected_sectors_csv, '')), 'A'),
+                 q.query
+            ) DESC, d.updated_at DESC
+            """, nativeQuery = true)
     List<PolicyDocument> search(@Param("query") String query);
 }

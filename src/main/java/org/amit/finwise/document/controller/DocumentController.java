@@ -2,9 +2,8 @@ package org.amit.finwise.document.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.amit.finwise.document.model.DocumentUpload;
+import org.amit.finwise.document.model.ParsedDocument;
 import org.amit.finwise.document.service.DocumentParserService;
-import org.amit.finwise.expense.model.Expense;
-import org.amit.finwise.expense.repository.ExpenseRepository;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -18,19 +17,33 @@ import java.util.List;
 public class DocumentController {
 
     private final DocumentParserService documentParserService;
-    private final ExpenseRepository expenseRepository;
 
     /**
      * POST /api/documents/upload
      * Upload a PDF statement (bank, MF, demat, credit card).
-     * Parsed debit entries are automatically saved as Expense records —
-     * budget limits are updated and the CFO advisor can reference them.
+     * The document module only stores the file metadata and parse result.
      */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<DocumentUpload> upload(
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "password", required = false) String password) {
         return ResponseEntity.ok(documentParserService.uploadAndParse(file, password));
+    }
+
+    /**
+     * POST /api/documents/parse
+     * Extract text and parse neutral document records without saving expenses or budgets.
+     */
+    @PostMapping(value = "/parse", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ParsedDocument> parse(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "password", required = false) String password) {
+        try {
+            return ResponseEntity.ok(
+                    documentParserService.parseBytes(file.getBytes(), password, file.getOriginalFilename()));
+        } catch (java.io.IOException e) {
+            throw new RuntimeException("Failed to read uploaded document", e);
+        }
     }
 
     /**
@@ -53,11 +66,13 @@ public class DocumentController {
     }
 
     /**
-     * GET /api/documents/{id}/expenses
-     * Returns all expenses that were extracted from the given document upload.
+     * GET /api/documents/{id}/parse-result
      */
-    @GetMapping("/{id}/expenses")
-    public ResponseEntity<List<Expense>> getExpenses(@PathVariable Long id) {
-        return ResponseEntity.ok(expenseRepository.findByPdfUploadId(id));
+    @GetMapping("/{id}/parse-result")
+    public ResponseEntity<ParsedDocument> getParseResult(@PathVariable Long id) {
+        return documentParserService.getParsedDocument(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
+
 }

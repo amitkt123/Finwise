@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
+import org.amit.finwise.investment.enums.InvestmentType;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.amit.finwise.policy.model.*;
@@ -144,7 +145,7 @@ public class PolicyIntelligenceService {
         return new PolicySearchResult(
                 toDocumentSummaries(documents),
                 toChunkMatches(chunks),
-                toImpactMatches(impacts));
+                toPolicyEventCards(impacts));
     }
 
     @Transactional(readOnly = true)
@@ -159,7 +160,18 @@ public class PolicyIntelligenceService {
                 .filter(s -> !s.isBlank())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
 
+        Set<String> assetClasses = investments.stream()
+                .map(Investment::getType)
+                .filter(Objects::nonNull)
+                .map(this::assetClassFor)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Set<String> factorExposures = inferFactorExposures(investments, userMessage);
+
         Set<String> queryTerms = new LinkedHashSet<>(sectors);
+        queryTerms.addAll(assetClasses);
+        queryTerms.addAll(factorExposures);
         queryTerms.addAll(extractGoalTerms(goals));
         queryTerms.addAll(extractMessageTerms(userMessage));
 
@@ -172,6 +184,13 @@ public class PolicyIntelligenceService {
                             LocalDate.now()),
                     limit));
         }
+        matchedImpacts.addAll(findSubjectImpacts(PolicySubjectType.ASSET_CLASS, assetClasses, limit, matchedImpacts));
+        matchedImpacts.addAll(findSubjectImpacts(PolicySubjectType.FACTOR, factorExposures, limit, matchedImpacts));
+        matchedImpacts.addAll(findSubjectImpacts(
+                PolicySubjectType.TAX_TOPIC,
+                extractTaxTopics(userMessage, goals),
+                limit,
+                matchedImpacts));
 
         List<PolicyChunk> matchedChunks = new ArrayList<>();
         for (String term : queryTerms) {
@@ -197,8 +216,82 @@ public class PolicyIntelligenceService {
 
         return new AdvisorPolicyContext(
                 toDocumentSummaries(documents),
-                toImpactMatches(matchedImpacts),
+                toPolicyEventCards(matchedImpacts),
                 toChunkMatches(matchedChunks));
+    }
+
+    private List<PolicyImpact> findSubjectImpacts(PolicySubjectType subjectType,
+                                                  Set<String> subjectKeys,
+                                                  int limit,
+                                                  List<PolicyImpact> existing) {
+        if (subjectKeys.isEmpty() || existing.size() >= limit) {
+            return List.of();
+        }
+        Set<Long> existingIds = existing.stream()
+                .map(PolicyImpact::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        return impactRepository.findActiveImpactsForSubjects(subjectType, subjectKeys, LocalDate.now())
+                .stream()
+                .filter(impact -> !existingIds.contains(impact.getId()))
+                .limit(Math.max(0, limit - existing.size()))
+                .toList();
+    }
+
+    private String assetClassFor(InvestmentType type) {
+        return switch (type) {
+            case STOCK, ETF -> "Equity";
+            case MUTUAL_FUND -> "Mutual Funds";
+            case BOND, FIXED_DEPOSIT, POST_OFFICE_SCHEME, PPF -> "Debt";
+            case REAL_ESTATE -> "Real Estate";
+            case GOLD, COMMODITY -> "Commodities";
+            case CRYPTOCURRENCY -> "Crypto";
+            case INSURANCE_POLICY -> "Insurance";
+            default -> null;
+        };
+    }
+
+    private Set<String> inferFactorExposures(List<Investment> investments, String userMessage) {
+        Set<String> factors = new LinkedHashSet<>();
+        for (Investment investment : investments) {
+            String sector = investment.getSector() == null ? "" : investment.getSector().toLowerCase(Locale.ENGLISH);
+            InvestmentType type = investment.getType();
+            if (containsAny(sector, "bank", "nbfc", "realty", "housing")
+                    || type == InvestmentType.BOND
+                    || type == InvestmentType.FIXED_DEPOSIT) {
+                factors.add("Rate Sensitive");
+            }
+            if (containsAny(sector, "capital market", "broker", "amc")) {
+                factors.add("Market Liquidity");
+            }
+        }
+        String lower = userMessage == null ? "" : userMessage.toLowerCase(Locale.ENGLISH);
+        if (containsAny(lower, "rate", "yield", "repo", "home loan", "fd")) factors.add("Rate Sensitive");
+        if (containsAny(lower, "liquidity", "volatility", "risk premium")) factors.add("Market Liquidity");
+        if (containsAny(lower, "rupee", "currency", "fx", "dollar")) factors.add("FX Sensitive");
+        return factors;
+    }
+
+    private Set<String> extractTaxTopics(String userMessage, List<FinancialGoal> goals) {
+        Set<String> topics = new LinkedHashSet<>();
+        String lower = userMessage == null ? "" : userMessage.toLowerCase(Locale.ENGLISH);
+        if (containsAny(lower, "capital gain", "ltcg", "stcg")) topics.add("capital-gains");
+        if (lower.contains("dividend")) topics.add("dividend-tax");
+        if (containsAny(lower, "stt", "securities transaction tax")) topics.add("stt");
+        if (containsAny(lower, "tds", "tax deducted")) topics.add("tds");
+        if (goals.stream().anyMatch(goal -> goal.getType() != null)) {
+            topics.add("capital-gains");
+        }
+        return topics;
+    }
+
+    private boolean containsAny(String haystack, String... needles) {
+        for (String needle : needles) {
+            if (haystack.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
@@ -229,13 +322,25 @@ public class PolicyIntelligenceService {
                     .subjectType(draft.subjectType())
                     .subjectKey(draft.subjectKey())
                     .subjectLabel(draft.subjectLabel())
+                    .actionType(draft.actionType())
+                    .transmissionChannel(draft.transmissionChannel())
+                    .affectedParty(draft.affectedParty())
                     .direction(draft.direction())
                     .horizon(draft.horizon())
                     .effectiveFrom(draft.effectiveFrom() != null ? draft.effectiveFrom() : document.getEffectiveFrom())
                     .effectiveTo(draft.effectiveTo() != null ? draft.effectiveTo() : document.getEffectiveTo())
+                    .implementationSummary(draft.implementationSummary())
+                    .surpriseClassification(draft.surpriseClassification())
+                    .legalForceRank(draft.legalForceRank() != null
+                            ? draft.legalForceRank()
+                            : legalForceRank(document.getBindingLevel(), document.getDocumentType()))
+                    .marketMovingPower(draft.marketMovingPower() != null
+                            ? draft.marketMovingPower()
+                            : marketMovingPower(document.getAuthority(), document.getDocumentType(), draft.actionType()))
                     .confidenceScore(draft.confidenceScore())
                     .impactSummary(draft.impactSummary())
                     .reasoningNote(draft.reasoningNote())
+                    .falsificationSignal(draft.falsificationSignal())
                     .tagsCsv(toCsv(draft.tags()))
                     .build());
         }
@@ -287,25 +392,110 @@ public class PolicyIntelligenceService {
         }).toList();
     }
 
-    private List<PolicyImpactMatch> toImpactMatches(List<PolicyImpact> impacts) {
-        return impacts.stream().map(impact -> new PolicyImpactMatch(
+    private List<PolicyEventCard> toPolicyEventCards(List<PolicyImpact> impacts) {
+        return impacts.stream()
+                .sorted(policyEventRankComparator())
+                .map(this::toPolicyEventCard)
+                .toList();
+    }
+
+    private PolicyEventCard toPolicyEventCard(PolicyImpact impact) {
+        PolicyDocument document = impact.getDocument();
+        PolicyEventCard.PolicyCitation citation = new PolicyEventCard.PolicyCitation(
+                document.getAuthority(),
+                document.getSourceReference(),
+                document.getTitle(),
+                document.getSourceUrl(),
+                document.getPublishedDate(),
+                impact.getEffectiveFrom() != null ? impact.getEffectiveFrom() : document.getEffectiveFrom()
+        );
+
+        return new PolicyEventCard(
+                "policy-impact-" + impact.getId(),
                 impact.getId(),
-                impact.getDocument().getId(),
-                impact.getDocument().getTitle(),
-                impact.getDocument().getAuthority(),
+                document.getId(),
+                document.getTitle(),
+                document.getAuthority(),
+                document.getDocumentType(),
+                document.getBindingLevel(),
                 impact.getPolicyArea(),
+                document.getSourceReference(),
+                document.getSourceUrl(),
+                document.getPublishedDate(),
+                impact.getEffectiveFrom(),
+                impact.getEffectiveTo(),
+                impact.getActionType(),
                 impact.getSubjectType(),
                 impact.getSubjectKey(),
                 impact.getSubjectLabel(),
+                impact.getAffectedParty(),
+                impact.getTransmissionChannel(),
                 impact.getDirection(),
                 impact.getHorizon(),
-                impact.getEffectiveFrom(),
-                impact.getEffectiveTo(),
+                impact.getSurpriseClassification(),
+                impact.getLegalForceRank(),
+                impact.getMarketMovingPower(),
                 impact.getConfidenceScore(),
                 impact.getImpactSummary(),
+                impact.getImplementationSummary(),
                 impact.getReasoningNote(),
+                impact.getFalsificationSignal(),
+                citation,
                 splitCsv(impact.getTagsCsv())
-        )).toList();
+        );
+    }
+
+    private Comparator<PolicyImpact> policyEventRankComparator() {
+        return Comparator.<PolicyImpact>comparingInt(impact -> nullableInt(impact.getMarketMovingPower())).reversed()
+                .thenComparing(Comparator.<PolicyImpact>comparingInt(impact -> nullableInt(impact.getLegalForceRank())).reversed())
+                .thenComparing(Comparator.<PolicyImpact>comparingDouble(impact -> nullableDouble(impact.getConfidenceScore())).reversed())
+                .thenComparing(Comparator.comparing(
+                        (PolicyImpact impact) -> nullableDate(impact.getDocument().getPublishedDate())).reversed())
+                .thenComparing(PolicyImpact::getId, Comparator.nullsLast(Comparator.reverseOrder()));
+    }
+
+    private int nullableInt(Integer value) {
+        return value != null ? value : 0;
+    }
+
+    private double nullableDouble(Double value) {
+        return value != null ? value : 0.0;
+    }
+
+    private LocalDate nullableDate(LocalDate value) {
+        return value != null ? value : LocalDate.MIN;
+    }
+
+    private int legalForceRank(PolicyBindingLevel bindingLevel, PolicyDocumentType documentType) {
+        if (bindingLevel == PolicyBindingLevel.LAW || documentType == PolicyDocumentType.ACT) return 100;
+        if (bindingLevel == PolicyBindingLevel.RULE || documentType == PolicyDocumentType.RULE) return 90;
+        if (bindingLevel == PolicyBindingLevel.REGULATION) return 85;
+        if (bindingLevel == PolicyBindingLevel.CIRCULAR_NOTIFICATION
+                || bindingLevel == PolicyBindingLevel.BINDING_COMPLIANCE_CHANGE
+                || documentType == PolicyDocumentType.CIRCULAR
+                || documentType == PolicyDocumentType.NOTIFICATION
+                || documentType == PolicyDocumentType.MASTER_DIRECTION) return 80;
+        if (bindingLevel == PolicyBindingLevel.BINDING) return 75;
+        if (bindingLevel == PolicyBindingLevel.MARKET_MOVING_GUIDANCE
+                || bindingLevel == PolicyBindingLevel.AUTHORITATIVE_GUIDANCE) return 55;
+        if (bindingLevel == PolicyBindingLevel.ADVISORY) return 35;
+        if (bindingLevel == PolicyBindingLevel.INDUSTRY_BODY) return 25;
+        return 15;
+    }
+
+    private int marketMovingPower(PolicyAuthority authority,
+                                  PolicyDocumentType documentType,
+                                  PolicyActionType actionType) {
+        if (authority == PolicyAuthority.RBI
+                && (documentType == PolicyDocumentType.MONETARY_POLICY
+                || actionType == PolicyActionType.RATE_CHANGE
+                || actionType == PolicyActionType.LIQUIDITY_OPERATION)) return 95;
+        if (authority == PolicyAuthority.SEBI
+                && (documentType == PolicyDocumentType.CIRCULAR
+                || actionType == PolicyActionType.MARKET_STRUCTURE_CHANGE)) return 80;
+        if (actionType == PolicyActionType.TAX_RATE_CHANGE || actionType == PolicyActionType.TDS_CHANGE) return 85;
+        if (documentType == PolicyDocumentType.PRESS_RELEASE || documentType == PolicyDocumentType.ANNOUNCEMENT) return 45;
+        return 60;
     }
 
     private Set<String> extractGoalTerms(List<FinancialGoal> goals) {
@@ -477,29 +667,61 @@ public class PolicyIntelligenceService {
             PolicySubjectType subjectType,
             String subjectKey,
             String subjectLabel,
+            PolicyActionType actionType,
+            PolicyTransmissionChannel transmissionChannel,
+            String affectedParty,
             PolicyImpactDirection direction,
             PolicyImpactHorizon horizon,
             LocalDate effectiveFrom,
             LocalDate effectiveTo,
+            String implementationSummary,
+            PolicySurpriseClassification surpriseClassification,
+            Integer legalForceRank,
+            Integer marketMovingPower,
             Double confidenceScore,
             String impactSummary,
             String reasoningNote,
+            String falsificationSignal,
             List<String> tags
     ) {
+        public PolicyImpactDraft(PolicyArea policyArea,
+                                 PolicySubjectType subjectType,
+                                 String subjectKey,
+                                 String subjectLabel,
+                                 PolicyImpactDirection direction,
+                                 PolicyImpactHorizon horizon,
+                                 LocalDate effectiveFrom,
+                                 LocalDate effectiveTo,
+                                 Double confidenceScore,
+                                 String impactSummary,
+                                 String reasoningNote,
+                                 List<String> tags) {
+            this(policyArea, subjectType, subjectKey, subjectLabel,
+                    null, null, null,
+                    direction, horizon, effectiveFrom, effectiveTo,
+                    null, null, null, null,
+                    confidenceScore, impactSummary, reasoningNote, null, tags);
+        }
     }
 
     public record PolicySearchResult(
             List<PolicyDocumentSummary> documents,
             List<PolicyChunkMatch> chunks,
-            List<PolicyImpactMatch> impacts
+            List<PolicyEventCard> eventCards
     ) {
+        public List<PolicyEventCard> impacts() {
+            return eventCards;
+        }
     }
 
     public record AdvisorPolicyContext(
             List<PolicyDocumentSummary> documents,
-            List<PolicyImpactMatch> impacts,
+            List<PolicyEventCard> eventCards,
             List<PolicyChunkMatch> chunks
     ) {
+        public List<PolicyEventCard> impacts() {
+            return eventCards;
+        }
     }
 
     public record PolicyDocumentSummary(
@@ -536,26 +758,6 @@ public class PolicyIntelligenceService {
             Integer pageNumberStart,
             Integer pageNumberEnd,
             String content
-    ) {
-    }
-
-    public record PolicyImpactMatch(
-            Long impactId,
-            Long documentId,
-            String documentTitle,
-            PolicyAuthority authority,
-            PolicyArea policyArea,
-            PolicySubjectType subjectType,
-            String subjectKey,
-            String subjectLabel,
-            PolicyImpactDirection direction,
-            PolicyImpactHorizon horizon,
-            LocalDate effectiveFrom,
-            LocalDate effectiveTo,
-            Double confidenceScore,
-            String impactSummary,
-            String reasoningNote,
-            List<String> tags
     ) {
     }
 }

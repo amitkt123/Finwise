@@ -17,18 +17,27 @@ public interface PolicyChunkRepository extends JpaRepository<PolicyChunk, Long> 
     @Query("DELETE FROM PolicyChunk c WHERE c.version = :version")
     void deleteByVersion(@Param("version") PolicyDocumentVersion version);
 
-    @Query("""
-            SELECT c FROM PolicyChunk c
-            JOIN c.version v
-            JOIN v.document d
-            WHERE v.current = true
+    @Query(value = """
+            WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
+            SELECT c.*
+            FROM policy_chunks c
+            JOIN policy_document_versions v ON c.version_id = v.id
+            JOIN policy_documents d ON v.document_id = d.id
+            CROSS JOIN q
+            WHERE v.is_current = true
               AND (
-                    lower(c.content) LIKE lower(concat('%', :query, '%'))
-                 OR lower(coalesce(c.heading, '')) LIKE lower(concat('%', :query, '%'))
-                 OR lower(coalesce(c.sectionPath, '')) LIKE lower(concat('%', :query, '%'))
-                 OR lower(coalesce(c.keywordText, '')) LIKE lower(concat('%', :query, '%'))
-              )
-            ORDER BY d.updatedAt DESC, c.chunkIndex ASC
-            """)
+                    setweight(to_tsvector('simple', coalesce(c.heading, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(c.section_path, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(c.keyword_text, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(c.content, '')), 'C')
+              ) @@ q.query
+            ORDER BY ts_rank_cd(
+                    setweight(to_tsvector('simple', coalesce(c.heading, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(c.section_path, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(c.keyword_text, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(c.content, '')), 'C'),
+                 q.query
+            ) DESC, d.updated_at DESC, c.chunk_index ASC
+            """, nativeQuery = true)
     List<PolicyChunk> searchCurrentChunks(@Param("query") String query);
 }

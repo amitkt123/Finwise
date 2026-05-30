@@ -2,7 +2,7 @@
   "info": {
     "name": "Expense Tracker – Documents",
     "_postman_id": "document-collection-001",
-    "description": "Upload bank/MF/credit-card statements. Parsed debit entries are automatically saved as Expense records — budget limits are updated and the CFO advisor can reference them.",
+    "description": "Upload and parse bank/MF/credit-card statements. The document API extracts text and returns neutral parse records; expense import is a separate finance operation.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -37,7 +37,37 @@
           "host": ["{{baseUrl}}"],
           "path": ["api", "documents", "upload"]
         },
-        "description": "Auto-detects institution (HDFC, ICICI, SBI, AXIS, KOTAK, CAMS, NSDL). Debit entries are saved as Expense records with auto-detected categories. MF purchases are saved as INVESTMENT expenses."
+        "description": "Stores the PDF, extracts text, auto-detects institution, and records neutral parsed transaction count. This does not save Expense records."
+      }
+    },
+    {
+      "name": "Parse PDF Without Saving",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": "",
+              "description": "Bank / MF / Demat / Credit Card PDF"
+            },
+            {
+              "key": "password",
+              "type": "text",
+              "value": "",
+              "description": "Optional - only for password-protected PDFs"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{baseUrl}}/api/documents/parse",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "documents", "parse"]
+        },
+        "description": "Extracts text and returns ParsedDocument with neutral transactions. No document metadata, expenses, or budgets are saved."
       }
     },
     {
@@ -62,6 +92,31 @@
           "host": ["{{baseUrl}}"],
           "path": ["api", "documents", "{{documentId}}"]
         }
+      }
+    },
+    {
+      "name": "Get Document Parse Result",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/documents/{{documentId}}/parse-result",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "documents", "{{documentId}}", "parse-result"]
+        }
+      }
+    },
+    {
+      "name": "Import Parsed Document Expenses",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/finance/expense/import/document/{{documentId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["api", "finance", "expense", "import", "document", "{{documentId}}"]
+        },
+        "description": "Explicit expense-module operation that converts neutral parsed transactions into Expense records and updates budgets."
       }
     }
   ]

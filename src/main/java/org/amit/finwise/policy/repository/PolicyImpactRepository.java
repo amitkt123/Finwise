@@ -27,19 +27,35 @@ public interface PolicyImpactRepository extends JpaRepository<PolicyImpact, Long
             @Param("subjectKeys") Collection<String> subjectKeys,
             @Param("asOfDate") LocalDate asOfDate);
 
-    @Query("""
-            SELECT i FROM PolicyImpact i
-            WHERE (i.effectiveFrom IS NULL OR i.effectiveFrom <= :asOfDate)
-              AND (i.effectiveTo IS NULL OR i.effectiveTo >= :asOfDate)
+    @Query(value = """
+            WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
+            SELECT i.*
+            FROM policy_impacts i
+            CROSS JOIN q
+            WHERE (i.effective_from IS NULL OR i.effective_from <= :asOfDate)
+              AND (i.effective_to IS NULL OR i.effective_to >= :asOfDate)
               AND (
-                    lower(i.impactSummary) LIKE lower(concat('%', :query, '%'))
-                 OR lower(coalesce(i.reasoningNote, '')) LIKE lower(concat('%', :query, '%'))
-                 OR lower(i.subjectKey) LIKE lower(concat('%', :query, '%'))
-                 OR lower(i.subjectLabel) LIKE lower(concat('%', :query, '%'))
-                 OR lower(coalesce(i.tagsCsv, '')) LIKE lower(concat('%', :query, '%'))
-              )
-            ORDER BY coalesce(i.confidenceScore, 0.0) DESC, i.createdAt DESC
-            """)
+                    setweight(to_tsvector('simple', coalesce(i.subject_key, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.subject_label, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.tags_csv, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.impact_summary, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(i.reasoning_note, '')), 'C')
+                 || setweight(to_tsvector('simple', coalesce(i.affected_party, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(i.implementation_summary, '')), 'C')
+                 || setweight(to_tsvector('simple', coalesce(i.falsification_signal, '')), 'D')
+              ) @@ q.query
+            ORDER BY ts_rank_cd(
+                    setweight(to_tsvector('simple', coalesce(i.subject_key, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.subject_label, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.tags_csv, '')), 'A')
+                 || setweight(to_tsvector('simple', coalesce(i.impact_summary, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(i.reasoning_note, '')), 'C')
+                 || setweight(to_tsvector('simple', coalesce(i.affected_party, '')), 'B')
+                 || setweight(to_tsvector('simple', coalesce(i.implementation_summary, '')), 'C')
+                 || setweight(to_tsvector('simple', coalesce(i.falsification_signal, '')), 'D'),
+                 q.query
+            ) DESC, coalesce(i.confidence_score, 0.0) DESC, i.created_at DESC
+            """, nativeQuery = true)
     List<PolicyImpact> searchActiveImpacts(
             @Param("query") String query,
             @Param("asOfDate") LocalDate asOfDate);
