@@ -4,7 +4,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
@@ -71,15 +73,27 @@ public class OllamaProvider implements LLMProvider {
                     .uri("/api/chat")
                     .body(requestBody)
                     .retrieve()
+                    .onStatus(HttpStatusCode::isError, (req, res) -> {
+                        String body = "unable to read error response";
+                        try {
+                            body = res.getBody() != null ? new String(res.getBody().readAllBytes()) : body;
+                        } catch (Exception ignored) {}
+                        log.error("Ollama API error (HTTP {}): {}", res.getStatusCode(), body);
+                        throw new RuntimeException("Ollama returned error: " + res.getStatusCode());
+                    })
                     .body(OllamaResponse.class);
 
-            if (response != null && response.message() != null) {
+            if (response != null && response.message() != null && response.message().content() != null) {
                 return response.message().content();
             }
+            log.warn("Ollama returned empty or null response");
             return "I was unable to generate a response at this time.";
+        } catch (HttpClientErrorException e) {
+            log.error("Ollama HTTP error: status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            throw new RuntimeException("Ollama LLM call failed: " + e.getMessage(), e);
         } catch (Exception e) {
-            log.error("Ollama call failed: {}", e.getMessage());
-            throw new RuntimeException("LLM call failed: " + e.getMessage(), e);
+            log.error("Ollama call failed: type={} message={}", e.getClass().getSimpleName(), e.getMessage());
+            throw new RuntimeException("Ollama LLM call failed: " + e.getMessage(), e);
         }
     }
 

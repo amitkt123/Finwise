@@ -1,19 +1,18 @@
 package org.amit.finwise.cfo.config;
 
 import org.amit.finwise.cfo.service.llm.ClaudeProvider;
+import org.amit.finwise.cfo.service.llm.GoogleAIProvider;
 import org.amit.finwise.cfo.service.llm.LLMProvider;
-import org.amit.finwise.cfo.service.llm.OllamaProvider;
 import org.amit.finwise.cfo.service.llm.OpenAIProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.context.annotation.Primary;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.util.concurrent.Executor;
 
 @Configuration
-@EnableAsync
 public class LLMConfig {
 
     @Value("${cfo.llm.provider:ollama}")
@@ -43,12 +42,22 @@ public class LLMConfig {
     @Value("${cfo.llm.openai.model:gpt-4o}")
     private String openAiModel;
 
+    @Value("${cfo.llm.google.api-key:}")
+    private String googleApiKey;
+
+    @Value("${cfo.llm.google.model:gemini-1.5-flash}")
+    private String googleModel;
+
+    @Value("${cfo.llm.google.temperature:0.3}")
+    private float googleTemperature;
+
     @Bean
     public LLMProvider llmProvider() {
         return switch (provider.toLowerCase()) {
             case "claude" -> new ClaudeProvider(claudeApiKey, claudeModel, ollamaMaxTokens);
             case "openai" -> new OpenAIProvider(openAiApiKey, openAiModel, ollamaMaxTokens);
-            default -> new OllamaProvider(ollamaBaseUrl, ollamaModel, ollamaTemperature, ollamaMaxTokens);
+            case "google" -> new GoogleAIProvider(googleApiKey, googleModel, googleTemperature, ollamaMaxTokens);
+            default -> throw new IllegalArgumentException("Unknown LLM provider: " + provider);
         };
     }
 
@@ -67,6 +76,7 @@ public class LLMConfig {
      * Bean name "llmRefinementExecutor" matches the @Async("llmRefinementExecutor") annotation.
      */
     @Bean(name = "llmRefinementExecutor")
+    @Primary
     public Executor llmRefinementExecutor() {
         ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
         executor.setCorePoolSize(1);         // 1 steady-state thread — Ollama is single-GPU
