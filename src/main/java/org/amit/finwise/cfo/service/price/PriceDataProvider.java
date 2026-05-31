@@ -46,8 +46,15 @@ public interface PriceDataProvider {
             BigDecimal high,
             BigDecimal low,
             BigDecimal close,
-            Long volume
-    ) {}
+            Long volume,
+            BigDecimal adjClose   // corporate-action adjusted close; null if provider doesn't supply it
+    ) {
+        /** Convenience constructor for providers that don't supply adjClose. */
+        DailyPrice(LocalDate date, BigDecimal open, BigDecimal high, BigDecimal low,
+                   BigDecimal close, Long volume) {
+            this(date, open, high, low, close, volume, null);
+        }
+    }
 
     // ── Exception ─────────────────────────────────────────────────────────────
 

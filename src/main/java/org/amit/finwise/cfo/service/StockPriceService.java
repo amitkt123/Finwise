@@ -2,6 +2,7 @@ package org.amit.finwise.cfo.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.model.DataQualityFlag;
 import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.model.StockPriceHistory;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
@@ -59,6 +60,13 @@ public class StockPriceService {
     // NSE applies ±5%, ±10%, or ±20% limits based on stock tier
     // We use ±9.5% as a conservative proxy (catches ±10% and above)
     private static final double CIRCUIT_THRESHOLD_PERCENT = 9.5;
+
+    // A raw-close drop beyond this threshold is treated as a corporate-action artifact
+    // (e.g. 1:5 split ≈ -80%) and flagged SUSPECT_GAP rather than a real lower circuit
+    private static final double SPLIT_SUSPECT_THRESHOLD_PERCENT = -70.0;
+
+    /** Yahoo Finance ticker for Nifty 50 index (no .NS suffix). */
+    public static final String NIFTY_SYMBOL = "^NSEI";
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -265,22 +273,33 @@ public class StockPriceService {
                 }
             }
 
-            // Circuit breaker detection
-            boolean hitUpper = false, hitLower = false;
-            if (changePercent != null) {
-                if (changePercent >= CIRCUIT_THRESHOLD_PERCENT)   hitUpper = true;
-                if (changePercent <= -CIRCUIT_THRESHOLD_PERCENT)  hitLower = true;
-            }
-            // Secondary heuristic: if high == low (frozen price), likely a circuit
-            if (dp.high() != null && dp.low() != null && dp.high().compareTo(dp.low()) == 0) {
-                // Check which direction relative to open
-                if (dp.open() != null && dp.close() != null) {
-                    if (dp.close().compareTo(dp.open()) > 0) hitUpper = true;
-                    else if (dp.close().compareTo(dp.open()) < 0) hitLower = true;
-                }
+            // ── Data quality / split detection ────────────────────────────────────
+            // A raw-close drop beyond SPLIT_SUSPECT_THRESHOLD is almost certainly a
+            // corporate action (split / bonus), not a real lower-circuit day.
+            // Flag it as SUSPECT_GAP so return-series computation excludes this point.
+            DataQualityFlag qualityFlag = DataQualityFlag.OK;
+            if (changePercent != null && changePercent <= SPLIT_SUSPECT_THRESHOLD_PERCENT) {
+                qualityFlag = DataQualityFlag.SUSPECT_GAP;
+                log.warn("[PriceService] SUSPECT_GAP: symbol={}, date={}, rawChange={}% — possible split/adj error",
+                        symbol, dp.date(), String.format("%.1f", changePercent));
             }
 
-            // Consecutive circuit count
+            // ── Circuit breaker detection (skip if already flagged as suspect) ────
+            boolean hitUpper = false, hitLower = false;
+            if (qualityFlag == DataQualityFlag.OK && changePercent != null) {
+                if (changePercent >= CIRCUIT_THRESHOLD_PERCENT)  hitUpper = true;
+                if (changePercent <= -CIRCUIT_THRESHOLD_PERCENT) hitLower = true;
+            }
+            // Secondary heuristic: high == low (frozen price) — direction by close vs open
+            if (qualityFlag == DataQualityFlag.OK
+                    && dp.high() != null && dp.low() != null
+                    && dp.high().compareTo(dp.low()) == 0
+                    && dp.open() != null && dp.close() != null) {
+                if (dp.close().compareTo(dp.open()) > 0)      hitUpper = true;
+                else if (dp.close().compareTo(dp.open()) < 0) hitLower = true;
+            }
+
+            // ── Consecutive circuit count ─────────────────────────────────────────
             int consecutiveCount = 0;
             if (hitUpper || hitLower) {
                 final boolean finalHitUpper = hitUpper;
@@ -306,8 +325,10 @@ public class StockPriceService {
                     .highPrice(dp.high())
                     .lowPrice(dp.low())
                     .closePrice(dp.close())
+                    .adjustedClose(dp.adjClose())
                     .volume(dp.volume())
                     .priceChangePercent(changePercent)
+                    .dataQualityFlag(qualityFlag)
                     .hitUpperCircuit(hitUpper)
                     .hitLowerCircuit(hitLower)
                     .consecutiveCircuitCount(consecutiveCount)
@@ -357,6 +378,92 @@ public class StockPriceService {
         throw new PriceProviderException(
                 "All providers " + providerNames + " failed for symbol=" + symbol,
                 lastException);
+    }
+
+    // ── Benchmark ingestion ───────────────────────────────────────────────────
+
+    /**
+     * Fetches and persists Nifty 50 (^NSEI) daily price history for use as a benchmark
+     * in beta and tracking-error computation. Fetches up to {@code days} calendar days
+     * and uses the same UPSERT semantics as fetchAndPersistSymbol (skips existing dates).
+     *
+     * Called daily by CFOScheduler alongside the regular price fetch.
+     *
+     * @param days number of calendar days to request (e.g. 365 for one year of risk history)
+     * @return number of new rows saved
+     */
+    @Transactional
+    public int fetchAndPersistBenchmark(int days) {
+        log.info("[PriceService] Fetching benchmark {} ({} days)", NIFTY_SYMBOL, days);
+        try {
+            // Temporarily override historyDays for this call
+            List<DailyPrice> prices = fetchWithFallbackOverride(NIFTY_SYMBOL, days);
+            if (prices.isEmpty()) {
+                log.warn("[PriceService] No data returned for benchmark {}", NIFTY_SYMBOL);
+                return 0;
+            }
+
+            int saved = 0;
+            for (int i = 0; i < prices.size(); i++) {
+                DailyPrice dp = prices.get(i);
+                if (priceRepo.existsBySymbolAndPriceDate(NIFTY_SYMBOL, dp.date())) continue;
+
+                Double changePercent = null;
+                if (i > 0 && prices.get(i - 1).close() != null && dp.close() != null) {
+                    BigDecimal prev = prices.get(i - 1).close();
+                    if (prev.compareTo(BigDecimal.ZERO) != 0) {
+                        changePercent = dp.close().subtract(prev)
+                                .divide(prev, 6, RoundingMode.HALF_UP)
+                                .multiply(BigDecimal.valueOf(100))
+                                .doubleValue();
+                    }
+                }
+
+                StockPriceHistory record = StockPriceHistory.builder()
+                        .symbol(NIFTY_SYMBOL)
+                        .priceDate(dp.date())
+                        .openPrice(dp.open())
+                        .highPrice(dp.high())
+                        .lowPrice(dp.low())
+                        .closePrice(dp.close())
+                        .adjustedClose(dp.adjClose() != null ? dp.adjClose() : dp.close())
+                        .volume(dp.volume())
+                        .priceChangePercent(changePercent)
+                        .dataQualityFlag(DataQualityFlag.OK)
+                        .build();
+
+                priceRepo.save(record);
+                saved++;
+            }
+
+            log.info("[PriceService] Benchmark {}: {} new records saved", NIFTY_SYMBOL, saved);
+            return saved;
+
+        } catch (PriceProviderException e) {
+            log.error("[PriceService] Failed to fetch benchmark {}: {}", NIFTY_SYMBOL, e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
+     * Like fetchWithFallback but allows overriding the number of days (bypasses historyDays field).
+     * Used for benchmark and risk-history pulls that need longer look-back periods.
+     */
+    private List<DailyPrice> fetchWithFallbackOverride(String symbol, int days)
+            throws PriceProviderException {
+        PriceProviderException lastException = null;
+        for (PriceDataProvider provider : providers) {
+            try {
+                List<DailyPrice> result = provider.fetchHistory(symbol, days);
+                if (!result.isEmpty()) return result;
+            } catch (PriceProviderException e) {
+                log.warn("[PriceService] provider={} failed for symbol={}: {}",
+                        provider.providerName(), symbol, e.getMessage());
+                lastException = e;
+            }
+        }
+        throw new PriceProviderException(
+                "All providers failed for symbol=" + symbol, lastException);
     }
 
     // ── Utility methods used by other services ────────────────────────────────
