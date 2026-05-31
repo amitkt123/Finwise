@@ -342,10 +342,8 @@ public class SymbolExtractorService {
                     tier1Category.toUpperCase(), Set.of());
             if (!suppressed.isEmpty()) {
                 sectors.removeIf(s -> suppressed.contains(s) && !companySectors.contains(s));
-                if (!suppressed.isEmpty()) {
-                    log.debug("Suppressed sectors {} for category {} (no direct company match)",
-                            suppressed, tier1Category);
-                }
+                log.debug("Suppressed sectors {} for category {} (no direct company match)",
+                        suppressed, tier1Category);
             }
         }
 
@@ -354,6 +352,14 @@ public class SymbolExtractorService {
         List<String> isins   = matches.stream().map(m -> m.entry.isin).filter(Objects::nonNull).distinct().toList();
 
         return new ExtractionResult(symbols, isins, new ArrayList<>(sectors), matches.size());
+    }
+
+    /**
+     * Look up the gazetteer entry for a given NSE symbol.
+     * Returns null if the symbol is not registered.
+     */
+    public SymbolEntry getSymbolEntry(String nseSymbol) {
+        return symbolMap.get(nseSymbol.toUpperCase());
     }
 
     /**

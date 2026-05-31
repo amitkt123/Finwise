@@ -37,11 +37,23 @@ public class PriceProviderConfig {
     private String alphaVantageApiKey;
 
     /**
+     * Single shared Yahoo Finance provider bean.
+     *
+     * Exposed as a standalone bean (not just an element of the priceDataProviders list)
+     * because FundamentalsService and MacroStateService autowire it directly by type for
+     * the quoteSummary / macro fetches. The fallback chain below reuses this same instance.
+     */
+    @Bean
+    public YahooFinancePriceProvider yahooFinancePriceProvider() {
+        return new YahooFinancePriceProvider();
+    }
+
+    /**
      * Returns providers in priority order: [primary, ...fallbacks].
      * Providers with missing API keys are excluded automatically.
      */
     @Bean
-    public List<PriceDataProvider> priceDataProviders() {
+    public List<PriceDataProvider> priceDataProviders(YahooFinancePriceProvider yahooFinancePriceProvider) {
         List<String> order = new ArrayList<>();
         order.add(primaryProvider.trim().toLowerCase());
         for (String fb : fallbackProviders.split(",")) {
@@ -53,22 +65,22 @@ public class PriceProviderConfig {
 
         List<PriceDataProvider> providers = new ArrayList<>();
         for (String name : order) {
-            PriceDataProvider p = buildProvider(name);
+            PriceDataProvider p = buildProvider(name, yahooFinancePriceProvider);
             if (p != null) providers.add(p);
         }
 
         if (providers.isEmpty()) {
             // Always guarantee at least Yahoo Finance as a safety net
-            providers.add(new YahooFinancePriceProvider());
+            providers.add(yahooFinancePriceProvider);
         }
 
         return providers;
     }
 
-    private PriceDataProvider buildProvider(String name) {
+    private PriceDataProvider buildProvider(String name, YahooFinancePriceProvider yahooFinancePriceProvider) {
         return switch (name) {
             case "yahoo-finance", "yahoo" ->
-                    new YahooFinancePriceProvider();
+                    yahooFinancePriceProvider;
 
             case "alpha-vantage", "alphavantage" -> {
                 if (alphaVantageApiKey == null || alphaVantageApiKey.isBlank()) {

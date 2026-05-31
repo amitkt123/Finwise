@@ -11,6 +11,7 @@ import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
+import org.amit.finwise.cfo.service.macro.MacroStateService;
 import org.amit.finwise.cfo.service.notification.EmailNotificationService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -29,6 +30,7 @@ public class CFOScheduler {
     private final LlmRefinementService llmRefinementService;
     private final StockPriceService stockPriceService;
     private final MarketContextService marketContextService;
+    private final MacroStateService macroStateService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -126,6 +128,7 @@ public class CFOScheduler {
      * 4:00 PM IST — Fetch closing prices after NSE market close (3:30 PM).
      * StockPriceService automatically updates Investment.currentPrice and rebuilds
      * the portfolio snapshot after all symbols are fetched.
+     * Also fetches 365 days of Nifty 50 benchmark history for risk engine beta/tracking-error.
      */
     @Scheduled(cron = "${cfo.schedule.price.fetch:0 0 16 * * MON-FRI}", zone = "Asia/Kolkata")
     public void fetchStockPrices() {
@@ -136,6 +139,14 @@ public class CFOScheduler {
             log.info("[CFO] Stock price fetch complete, investments and snapshot updated");
         } catch (Exception e) {
             log.error("[CFO] Stock price fetch failed: {}", e.getMessage());
+        }
+
+        // Fetch Nifty 50 benchmark — UPSERT semantics, only new dates are saved
+        try {
+            int saved = stockPriceService.fetchAndPersistBenchmark(365);
+            log.info("[CFO] Nifty 50 benchmark fetch complete: {} new records", saved);
+        } catch (Exception e) {
+            log.error("[CFO] Nifty 50 benchmark fetch failed: {}", e.getMessage());
         }
     }
 
@@ -186,6 +197,27 @@ public class CFOScheduler {
     public void refreshMarketContext() {
         log.debug("[CFO] Invalidating market context cache");
         marketContextService.invalidateCache();
+    }
+
+    // ── Macro State (Phase 5) ────────────────────────────────────────────
+
+    /**
+     * 5:00 PM IST — Refresh macro snapshot after market close.
+     * Fetches USD/INR, India VIX, and merges with config-based repo rate / CPI / G-sec yield.
+     */
+    @Scheduled(cron = "0 0 17 * * MON-FRI", zone = "Asia/Kolkata")
+    public void refreshMacroState() {
+        log.info("[CFO] Refreshing macro state snapshot...");
+        try {
+            org.amit.finwise.cfo.model.MacroSnapshot snapshot = macroStateService.fetchAndPersistDaily();
+            log.info("[CFO] Macro snapshot updated: repo={}, CPI={}, USD/INR={}, VIX={}",
+                    snapshot.getRepoRate(),
+                    snapshot.getCpiYoY(),
+                    snapshot.getUsdInr(),
+                    snapshot.getIndiaVix());
+        } catch (Exception e) {
+            log.error("[CFO] Macro state refresh failed: {}", e.getMessage());
+        }
     }
 
     /** Weekly: Every Sunday 9 AM IST — Goal review + advice email */

@@ -285,11 +285,12 @@ public class CFOController {
     }
 
     /**
-     * POST /api/cfo/prices/fetch/{symbol}
+     * POST /api/cfo/prices/fetch-symbol?symbol={symbol}
      * Fetch price history for a specific symbol (useful for testing individual providers).
+     * Query param allows special characters like ^ in index symbols (e.g., ^NSEI, ^BSESN).
      */
-    @PostMapping("/prices/fetch/{symbol}")
-    public ResponseEntity<Map<String, Object>> fetchPriceForSymbol(@PathVariable String symbol) {
+    @PostMapping("/prices/fetch-symbol")
+    public ResponseEntity<Map<String, Object>> fetchPriceForSymbol(@RequestParam String symbol) {
         try {
             int saved = stockPriceService.fetchAndPersistSymbol(symbol.toUpperCase());
             return ResponseEntity.ok(Map.of(

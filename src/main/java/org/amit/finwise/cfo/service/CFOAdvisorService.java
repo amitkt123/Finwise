@@ -17,8 +17,15 @@ import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
 import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.repository.UserProfileRepository;
+import org.amit.finwise.cfo.model.RiskDecomposition;
+import org.amit.finwise.cfo.model.StockDeepDive;
+import org.amit.finwise.cfo.model.TechnicalSnapshot;
+import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
+import org.amit.finwise.cfo.service.analytics.TechnicalAnalysisService;
 import org.amit.finwise.cfo.service.llm.LLMMessage;
 import org.amit.finwise.cfo.service.llm.LLMProvider;
+import org.amit.finwise.cfo.service.research.IntentClassifier;
+import org.amit.finwise.cfo.service.research.StockIntelligenceService;
 import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.investment.model.Investment;
@@ -26,7 +33,6 @@ import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.amit.finwise.policy.service.PolicyIntelligenceService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -59,6 +65,10 @@ public class CFOAdvisorService {
     private final InvestmentRepository investmentRepository;
     private final StockPriceHistoryRepository stockPriceHistoryRepository;
     private final PolicyIntelligenceService policyIntelligenceService;
+    private final PortfolioRiskService portfolioRiskService;
+    private final TechnicalAnalysisService technicalAnalysisService;
+    private final IntentClassifier intentClassifier;
+    private final StockIntelligenceService stockIntelligenceService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -85,6 +95,28 @@ public class CFOAdvisorService {
             - Cite the authority, reference, and effective date where possible.
             - Format responses in clean Markdown with sections.
             - Do not make up numbers — only use figures from the provided context.
+            - Before recommending, list what data you would want but do not have. If a recommendation depends on missing data, label it LOW-CONFIDENCE and state why.
+            - Confidence scores must cite which specific evidence (e.g. which metric, news item, or policy card) drives them.
+            - If a field shows DATA_INCOMPLETE or INSUFFICIENT_HISTORY, declare the gap explicitly — do NOT substitute training-data recall for missing live data.
+            - All risk numbers (volatility, VaR, beta) in context are computed from actual price history — treat them as authoritative, not approximate.
+            """;
+
+    private static final String RESEARCH_SYSTEM_PROMPT = """
+            ## Research Mode Instructions
+            You are analyzing a specific stock at the user's request. Follow this structure exactly:
+
+            1. **Quick Verdict**: one of INITIATE / AVOID / WAIT-FOR-PULLBACK / NEEDS-MORE-DATA
+            2. **Data Evidence**: cite specific numbers from the ## Stock Deep-Dive block (RSI, SMA, beta, VaR, etc.)
+            3. **Thesis**: 2-3 sentences anchored to the evidence pack, NOT general knowledge
+            4. **Break-Condition**: one falsifiable condition that would reverse the verdict
+            5. **Fit-to-Portfolio**: use the Portfolio Fit section — state how this position changes portfolio risk
+            6. **Concrete Action**: specific entry condition, suggested position size vs portfolio, and one key watch level
+
+            Rules:
+            - Every claim must cite a specific metric from the context (e.g. "RSI=72 → overbought", "β=1.4 → amplifies Nifty moves")
+            - If a field shows DATA_INCOMPLETE or INSUFFICIENT_HISTORY, declare the gap. Do NOT use training-data recall to fill missing live data.
+            - Confidence on each recommendation must cite which data point drives it (0.0–1.0)
+            - If hasPriceHistory=false, respond with NEEDS-MORE-DATA and explain why no live data is available
             """;
 
     // ── Daily Brief ───────────────────────────────────────────────────────────
@@ -97,12 +129,11 @@ public class CFOAdvisorService {
      * This ensures a fresh brief is produced after each Groww sync + price fetch cycle,
      * rather than serving a stale 7:30 AM brief all day.
      */
-    @Transactional
     public AiInsight generateDailyBrief() {
         String userId = defaultUserId;
         LocalDate today = LocalDate.now();
 
-        Optional<AiInsight> existing = insightRepository.findByUserIdAndDateAndType(
+        Optional<AiInsight> existing = insightRepository.findFirstByUserIdAndInsightDateAndInsightTypeOrderByCreatedAtDesc(
                 userId, today, AiInsight.InsightType.DAILY_BRIEF);
         if (existing.isPresent()) {
             boolean fresh = existing.get().getCreatedAt()
@@ -128,12 +159,13 @@ public class CFOAdvisorService {
                    - 📅 Medium-Term (1–3 months): Positioning decisions
                    - 🧱 Long-Term (1+ year): Strategic allocation shifts
                    For each action include: Confidence: X.X (0.0–1.0)
-                5. **Risk Scorecard** — Use the Market Risk Score from context; map risks to specific holdings
+                5. **Risk Assessment** — Lead with the quant **Risk Decomposition** block (annualized vol, portfolio beta vs Nifty, 1-day VaR/CVaR, effective bets, top risk contributors with %% of volatility). Map the top contributors to specific holdings. Treat the **News-Sentiment Risk Scorecard** as a secondary sentiment signal only — never present it as the portfolio's actual risk.
 
                 Rules:
                 - Reference exact holdings and exposure %% from context. Never say "no portfolio data".
                 - For each news → holding impact, state: "[Stock] has X%% exposure, [POSITIVE/NEGATIVE] impact due to [reason]"
-                - If Risk Score ≥ 70 → open with a CAUTION banner
+                - Anchor every risk statement to a number from the Risk Decomposition block; if it shows LOW_CONFIDENCE or is absent, say so rather than substituting the sentiment score.
+                - Open with a CAUTION banner if the Risk Decomposition shows portfolio beta > 1.2, is flagged LOW_CONFIDENCE, or the News-Sentiment Risk Score ≥ 70.
 
                 Context:
                 %s
@@ -155,7 +187,6 @@ public class CFOAdvisorService {
 
     // ── After-Hours Insights ──────────────────────────────────────────────────
 
-    @Transactional
     public AiInsight generateAfterHoursInsights() {
         String userId = defaultUserId;
         LocalDate today = LocalDate.now();
@@ -207,7 +238,6 @@ public class CFOAdvisorService {
      *
      * @param label short label embedded in the title, e.g. "Mid-Day" or "Post-Close"
      */
-    @Transactional
     public AiInsight generateMarketInsight(String label) {
         String userId = defaultUserId;
         LocalDate today = LocalDate.now();
@@ -248,7 +278,6 @@ public class CFOAdvisorService {
 
     // ── Goal Advice ────────────────────────────────────────────────────────────
 
-    @Transactional
     public AiInsight generateGoalAdvice() {
         String userId = defaultUserId;
 
@@ -312,13 +341,30 @@ public class CFOAdvisorService {
     // ── Conversational Chat ────────────────────────────────────────────────────
 
     public String chat(List<LLMMessage> conversationHistory, String userMessage) {
-        String contextBlock = buildFullContext(defaultUserId, userMessage);
+        IntentClassifier.ClassifiedIntent intent = intentClassifier.classify(userMessage);
+        log.info("[CFO.chat] intent={} symbol={} confidence={}",
+                intent.type(), intent.symbol(), intent.confidence());
 
-        // Inject context as first system message if history is empty
+        String systemPrompt;
+        String contextBlock;
+
+        if (intent.type() == IntentClassifier.Intent.RESEARCH && intent.symbol() != null) {
+            // RESEARCH path: deep-dive first (primacy), portfolio as fit-context after
+            StockDeepDive deepDive = stockIntelligenceService.analyze(intent.symbol(), defaultUserId);
+            contextBlock = buildResearchContext(deepDive, defaultUserId, userMessage);
+            systemPrompt = CFO_SYSTEM_PROMPT + "\n\n" + RESEARCH_SYSTEM_PROMPT;
+        } else {
+            // PORTFOLIO_REVIEW / PLANNING: existing context layout
+            contextBlock = buildFullContext(defaultUserId, userMessage);
+            systemPrompt = CFO_SYSTEM_PROMPT;
+        }
+
         List<LLMMessage> messages;
         if (conversationHistory.isEmpty()) {
+            // Phase 6: split system messages so static prompt is cached separately
             messages = List.of(
-                    LLMMessage.system(CFO_SYSTEM_PROMPT + "\n\n## Your Current Financial Context:\n" + contextBlock),
+                    LLMMessage.cachedSystem(systemPrompt),
+                    LLMMessage.system("\n\n## Your Current Financial Context:\n" + contextBlock),
                     LLMMessage.user(userMessage)
             );
         } else {
@@ -328,7 +374,6 @@ public class CFOAdvisorService {
 
         String response = llmProvider.chatWithHistory(messages);
 
-        // Persist as CHAT_RESPONSE insight
         AiInsight insight = AiInsight.builder()
                 .userId(defaultUserId)
                 .insightDate(LocalDate.now())
@@ -342,13 +387,124 @@ public class CFOAdvisorService {
         return response;
     }
 
+    /**
+     * Builds the context block for a RESEARCH-intent query.
+     * Deep-dive leads (primacy), portfolio follows as fit-context.
+     */
+    private String buildResearchContext(StockDeepDive deepDive, String userId, String userMessage) {
+        StringBuilder ctx = new StringBuilder();
+
+        // ── Deep-dive first (primacy for RESEARCH queries) ────────────────────
+        ctx.append("## Stock Deep-Dive: ").append(deepDive.symbol()).append("\n");
+        ctx.append("As of: ").append(deepDive.asOf()).append("\n");
+
+        // Data quality gate
+        if (!deepDive.knownSymbol()) {
+            ctx.append("⚠ UNKNOWN_SYMBOL: ").append(deepDive.symbol())
+               .append(" not found in the stock gazetteer.\n");
+        }
+        if (!deepDive.hasPriceHistory()) {
+            ctx.append("⚠ DATA_INCOMPLETE:PRICE_HISTORY — no live price data available for ")
+               .append(deepDive.symbol()).append(". Do NOT use training-data recall.\n");
+        }
+        if (!deepDive.dataGaps().isEmpty()) {
+            ctx.append("Data Gaps: ").append(String.join("; ", deepDive.dataGaps())).append("\n");
+        }
+        ctx.append("\n");
+
+        // Live quote
+        if (deepDive.lastClose() != null) {
+            ctx.append("### Live Quote\n");
+            ctx.append(String.format("Last Close: ₹%.2f", deepDive.lastClose()));
+            if (deepDive.dayChangePercent() != null)
+                ctx.append(String.format("  |  Day Change: %+.2f%%", deepDive.dayChangePercent()));
+            if (deepDive.hitCircuitToday())
+                ctx.append("  |  ⚡ ").append(deepDive.circuitType()).append(" CIRCUIT TODAY");
+            ctx.append("\n\n");
+        }
+
+        // Technical snapshot
+        if (deepDive.technicals() != null) {
+            ctx.append(deepDive.technicals().toContextBlock());
+            ctx.append("\n");
+        } else if (deepDive.hasPriceHistory()) {
+            ctx.append("### Technicals\nDATA_INCOMPLETE:TECHNICALS — insufficient price history\n\n");
+        }
+
+        // Stock-specific news
+        if (!deepDive.relevantNews().isEmpty()) {
+            ctx.append("### Recent News (").append(deepDive.symbol()).append(")\n");
+            deepDive.relevantNews().forEach(a -> {
+                ctx.append("- [").append(a.getSentiment()).append("] ")
+                   .append(a.getSource()).append(": ").append(a.getTitle());
+                if (a.getSummary() != null && !a.getSummary().isBlank())
+                    ctx.append(" — ").append(a.getSummary(), 0,
+                            Math.min(120, a.getSummary().length()));
+                ctx.append("\n");
+            });
+            ctx.append("\n");
+        } else {
+            ctx.append("### Recent News\nNo stock-specific news in the last 7 days.\n\n");
+        }
+
+        // Portfolio fit
+        StockDeepDive.PortfolioFit fit = deepDive.portfolioFit();
+        if (fit != null) {
+            ctx.append("### Portfolio Fit\n");
+            ctx.append(fit.fitSummary()).append("\n");
+            if (fit.isHeld() && !Double.isNaN(fit.pctContributionToRisk()))
+                ctx.append(String.format("Risk contribution: %.1f%% of portfolio volatility%n",
+                        fit.pctContributionToRisk()));
+            ctx.append("\n");
+
+            // Phase 7: Quantitative fit metrics
+            ctx.append("### Portfolio Fit (Quantitative)\n");
+            if (!Double.isNaN(fit.correlationToPortfolio())) {
+                String overlapLabel = fit.correlationToPortfolio() < 0.3 ? "LOW" :
+                                     fit.correlationToPortfolio() < 0.7 ? "MODERATE" : "HIGH";
+                ctx.append(String.format("Correlation to portfolio: %.2f (%s overlap)%n",
+                        fit.correlationToPortfolio(), overlapLabel));
+            } else {
+                ctx.append("Correlation to portfolio: DATA_INCOMPLETE\n");
+            }
+
+            if (!Double.isNaN(fit.marginalVolImpact())) {
+                String impact = fit.marginalVolImpact() < 0 ? "decreases" : "increases";
+                ctx.append(String.format("Marginal vol impact at 5%% position: %+.2f%% p.a. (%s portfolio risk)%n",
+                        fit.marginalVolImpact() * 100, impact));
+                ctx.append(String.format("Projected portfolio vol (post-add): %.2f%% p.a.%n",
+                        fit.newPortfolioVol() * 100));
+            } else {
+                ctx.append("Marginal vol impact: DATA_INCOMPLETE\n");
+            }
+
+            if (fit.verdictLabel() != null) {
+                ctx.append(String.format("\n--- VERDICT: %s ---%n", fit.verdictLabel()));
+                if (fit.verdictRationale() != null) {
+                    ctx.append(String.format("Rationale: %s%n", fit.verdictRationale()));
+                }
+            }
+            ctx.append("\n");
+        }
+
+        // ── Portfolio context follows as fit reference ─────────────────────────
+        appendPortfolioSnapshot(ctx, userId);
+        appendPortfolioHoldings(ctx, userId);
+        appendQuantRiskDecomposition(ctx, userId);
+        appendPolicyIntelligenceContext(ctx, userId, userMessage, 4);
+        appendTodaysNews(ctx, userId, 4);
+
+        return ctx.toString();
+    }
+
     // ── Context Builders ───────────────────────────────────────────────────────
 
     private String buildDailyBriefContext(String userId) {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
-        appendRiskScorecard(ctx, userId);
+        appendQuantRiskDecomposition(ctx, userId);   // Phase 1: real portfolio risk math
+        appendNewsSentimentRisk(ctx, userId);         // news-based risk signal (renamed)
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
         appendPortfolioHoldings(ctx, userId);
@@ -366,7 +522,8 @@ public class CFOAdvisorService {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
-        appendRiskScorecard(ctx, userId);
+        appendQuantRiskDecomposition(ctx, userId);
+        appendNewsSentimentRisk(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
         appendPortfolioHoldings(ctx, userId);
         appendRecentPriceTrends(ctx, userId, 5);
@@ -382,7 +539,8 @@ public class CFOAdvisorService {
         StringBuilder ctx = new StringBuilder();
 
         appendMarketContextSummary(ctx, userId);
-        appendRiskScorecard(ctx, userId);
+        appendQuantRiskDecomposition(ctx, userId);
+        appendNewsSentimentRisk(ctx, userId);
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
         appendPortfolioHoldings(ctx, userId);
@@ -727,14 +885,14 @@ public class CFOAdvisorService {
     }
 
     /**
-     * Injects a recent N-day price trend table for the top holdings by cost.
-     * Gives the LLM concrete momentum data (not just today's snapshot) to reason about.
+     * Phase 2: Replaces the raw price-string dump with labeled technical conclusions.
+     * TechnicalAnalysisService does all the arithmetic; the LLM receives conclusions,
+     * not raw numbers to calculate from.
      */
-    private void appendRecentPriceTrends(StringBuilder ctx, String userId, int days) {
+    private void appendRecentPriceTrends(StringBuilder ctx, String userId, int ignored) {
         List<Investment> investments = investmentRepository.findActiveInvestments(userId);
         if (investments.isEmpty()) return;
 
-        // Focus on top 8 holdings by cost
         List<Investment> topHoldings = investments.stream()
                 .filter(inv -> inv.getSymbol() != null && inv.getTotalCost() != null)
                 .sorted(Comparator.comparing(inv -> inv.getTotalCost().negate()))
@@ -743,27 +901,40 @@ public class CFOAdvisorService {
 
         if (topHoldings.isEmpty()) return;
 
-        LocalDate since = LocalDate.now().minusDays(days);
-        ctx.append("## Recent Price Trends (last ").append(days).append(" days)\n");
+        ctx.append("## Technical Signals (Top Holdings)\n");
 
+        boolean anyData = false;
         for (Investment inv : topHoldings) {
-            List<org.amit.finwise.cfo.model.StockPriceHistory> history =
-                    stockPriceHistoryRepository.findRecentBySymbol(inv.getSymbol().toUpperCase(), since);
-            if (history.isEmpty()) continue;
-
-            // history is ordered DESC (newest first)
-            ctx.append("- ").append(inv.getSymbol()).append(": ");
-            List<String> entries = new ArrayList<>();
-            for (int i = history.size() - 1; i >= 0; i--) {
-                org.amit.finwise.cfo.model.StockPriceHistory h = history.get(i);
-                String entry = h.getPriceDate().toString() + " ₹" + h.getClosePrice();
-                if (h.getPriceChangePercent() != null)
-                    entry += " (" + String.format("%+.1f%%", h.getPriceChangePercent()) + ")";
-                if (Boolean.TRUE.equals(h.getHitUpperCircuit())) entry += "⚡U";
-                else if (Boolean.TRUE.equals(h.getHitLowerCircuit())) entry += "⚡L";
-                entries.add(entry);
+            String sym = inv.getSymbol().toUpperCase();
+            Optional<TechnicalSnapshot> snapOpt = technicalAnalysisService.analyze(sym);
+            if (snapOpt.isEmpty()) {
+                ctx.append("- ").append(sym).append(": INSUFFICIENT_HISTORY\n");
+                continue;
             }
-            ctx.append(String.join(" → ", entries)).append("\n");
+            anyData = true;
+            TechnicalSnapshot snap = snapOpt.get();
+
+            ctx.append("- ").append(sym)
+               .append(" | Trend: ").append(snap.trend())
+               .append(" | Momentum: ").append(snap.momentum());
+
+            if (!Double.isNaN(snap.rsi14()))
+                ctx.append(String.format(" | RSI: %.1f", snap.rsi14()));
+            if (!Double.isNaN(snap.return5d()))
+                ctx.append(String.format(" | 5d: %+.1f%%", snap.return5d()));
+            if (!Double.isNaN(snap.return20d()))
+                ctx.append(String.format(" | 20d: %+.1f%%", snap.return20d()));
+            if (!Double.isNaN(snap.pctFrom52wHigh()))
+                ctx.append(String.format(" | vs52wHigh: %+.1f%%", snap.pctFrom52wHigh()));
+            if (!Double.isNaN(snap.sma50()))
+                ctx.append(String.format(" | vs SMA50: %+.1f%%", snap.pctVsSma50()));
+            if (!Double.isNaN(snap.sma200()))
+                ctx.append(String.format(" | %s", snap.goldenCross() ? "GOLDEN_CROSS" : "DEATH_CROSS"));
+            ctx.append("\n");
+        }
+
+        if (!anyData) {
+            ctx.append("(No technical data available — price history not yet accumulated)\n");
         }
         ctx.append("\n");
     }
@@ -824,10 +995,11 @@ public class CFOAdvisorService {
     }
 
     /**
-     * Computes a 0–100 market risk score and injects it into context.
+     * Computes a 0–100 news-sentiment risk score and injects it into context.
      * Derived from: negative article count + price volatility + portfolio trend + concentration.
+     * This is NOT a quant risk measure — see appendQuantRiskDecomposition for real portfolio risk.
      */
-    private void appendRiskScorecard(StringBuilder ctx, String userId) {
+    private void appendNewsSentimentRisk(StringBuilder ctx, String userId) {
         MarketContextService.MarketContextSnapshot mc = marketContextService.getMarketContext(userId);
 
         int riskScore = 0;
@@ -857,13 +1029,81 @@ public class CFOAdvisorService {
 
         String riskLevel = riskScore >= 70 ? "HIGH" : riskScore >= 40 ? "MEDIUM" : "LOW";
 
-        ctx.append("## Risk Scorecard\n");
-        ctx.append("Market Risk Score: ").append(riskScore).append("/100 (").append(riskLevel).append(")\n");
-        ctx.append("Volatility: ").append(mc.isVolatileMarket() ? "HIGH" : "NORMAL").append("\n");
+        ctx.append("## News-Sentiment Risk Scorecard\n");
+        ctx.append("(Note: this is a news-signal score, not quant portfolio risk — see Risk Decomposition above)\n");
+        ctx.append("Sentiment Risk Score: ").append(riskScore).append("/100 (").append(riskLevel).append(")\n");
+        ctx.append("Volatility Signal: ").append(mc.isVolatileMarket() ? "HIGH" : "NORMAL").append("\n");
         ctx.append("Negative News (3d): ").append(mc.highRelevanceNegativeCount3Days()).append(" HIGH-relevance articles\n");
         if (mc.priceBasedVolatility() > 0)
             ctx.append("Price Volatility: ±").append(String.format("%.1f%%", mc.priceBasedVolatility())).append(" avg across holdings\n");
         ctx.append("\n");
+    }
+
+    /**
+     * Injects a quantitative ## Risk Decomposition block computed by PortfolioRiskService.
+     * All numbers are derived from actual price history — the LLM narrates, it does not calculate.
+     * Silently omitted when insufficient price history exists (< 60 trading-day observations).
+     */
+    private void appendQuantRiskDecomposition(StringBuilder ctx, String userId) {
+        try {
+            Optional<RiskDecomposition> rdOpt = portfolioRiskService.compute(userId);
+            if (rdOpt.isEmpty()) return;
+
+            RiskDecomposition rd = rdOpt.get();
+            ctx.append("## Risk Decomposition (Quantitative)\n");
+
+            if (rd.isLowConfidence()) {
+                ctx.append("⚠ LOW_CONFIDENCE: insufficient price history for some holdings");
+                if (!rd.excludedSymbols().isEmpty()) {
+                    ctx.append(" — excluded (INSUFFICIENT_HISTORY): ")
+                       .append(String.join(", ", rd.excludedSymbols()));
+                }
+                ctx.append("\n");
+            }
+
+            ctx.append(String.format("Period: %s → %s (%d trading days)\n",
+                    rd.seriesFrom(), rd.seriesTo(), rd.observationCount()));
+
+            ctx.append(String.format("Annualized Volatility: %.2f%% (daily: %.3f%%)\n",
+                    rd.annualizedVolatility() * 100, rd.dailyVolatility() * 100));
+
+            ctx.append(String.format("Portfolio Beta (vs Nifty 50): %.2f\n", rd.portfolioBeta()));
+
+            ctx.append(String.format(
+                    "1-Day VaR 95%% — Parametric: ₹%.0f | Historical: ₹%.0f\n",
+                    rd.var95Parametric(), rd.var95Historical()));
+            ctx.append(String.format(
+                    "1-Day VaR 99%% — Parametric: ₹%.0f\n", rd.var99Parametric()));
+            ctx.append(String.format("Expected Shortfall (CVaR 95%%): ₹%.0f\n", rd.cvar95()));
+
+            ctx.append(String.format("Diversification Ratio: %.2f | Effective Bets (ENB): %.1f\n",
+                    rd.diversificationRatio(), rd.effectiveNumberOfBets()));
+            ctx.append(String.format("Name HHI: %.3f | Sector HHI: %.3f\n",
+                    rd.nameHHI(), rd.sectorHHI()));
+
+            if (!Double.isNaN(rd.sharpeRatio()))
+                ctx.append(String.format("Sharpe Ratio: %.2f | ", rd.sharpeRatio()));
+            if (!Double.isNaN(rd.sortinoRatio()))
+                ctx.append(String.format("Sortino Ratio: %.2f\n", rd.sortinoRatio()));
+            else ctx.append("\n");
+            if (!Double.isNaN(rd.trackingErrorVsNifty()))
+                ctx.append(String.format("Tracking Error vs Nifty: %.2f%%\n",
+                        rd.trackingErrorVsNifty() * 100));
+
+            // Top-3 risk contributors
+            ctx.append("Top Risk Contributors (% of portfolio volatility):\n");
+            rd.riskContributors().stream().limit(3).forEach(c ->
+                    ctx.append(String.format("  - %s: %.1f%% | weight: %.1f%% | β: %.2f\n",
+                            c.symbol(),
+                            c.percentContributionToRisk() * 100,
+                            c.weight() * 100,
+                            c.beta())));
+
+            ctx.append("Headline: ").append(rd.headline()).append("\n\n");
+
+        } catch (Exception e) {
+            log.warn("[CFO] Risk decomposition failed, skipping block: {}", e.getMessage());
+        }
     }
 
     /** Phase 7: Prepend a concise market state line to every brief context. */

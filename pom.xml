@@ -105,6 +105,12 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-math3</artifactId>
+            <version>3.6.1</version>
+        </dependency>
     </dependencies>
 
     <build>
@@ -141,6 +147,21 @@
                             <version>${project.parent.version}</version>
                         </path>
                     </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!--
+                        The project targets Java 21 but is commonly built/tested on a newer JDK
+                        (e.g. 25) where only JDK 25/17 are installed. Byte Buddy (Mockito's
+                        backend) refuses to instrument classes on JDKs it doesn't yet recognise;
+                        net.bytebuddy.experimental=true lets it proceed so concrete-class mocks
+                        work. EnableDynamicAgentLoading silences the inline-agent warning.
+                    -->
+                    <argLine>-Dnet.bytebuddy.experimental=true -XX:+EnableDynamicAgentLoading</argLine>
                 </configuration>
             </plugin>
         </plugins>

@@ -3,7 +3,6 @@ package org.amit.finwise.cfo.service.ingestion;
 import com.rometools.rome.feed.synd.SyndEntry;
 import com.rometools.rome.feed.synd.SyndFeed;
 import com.rometools.rome.io.SyndFeedInput;
-import com.rometools.rome.io.XmlReader;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.config.NewsProperties;
@@ -16,8 +15,13 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.InputStream;
+import java.io.StringReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
+import java.util.zip.GZIPInputStream;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -87,28 +91,58 @@ public class NewsAggregatorService {
             return 0;
         }
         int saved = 0;
+        HttpURLConnection conn = null;
         try {
             // Open connection with proper User-Agent so sites that block bots (403) are more
             // likely to respond. Enforce per-source timeouts to prevent HikariPool starvation.
-            HttpURLConnection conn = (HttpURLConnection) new URL(rssUrl).openConnection();
+            conn = (HttpURLConnection) new URL(rssUrl).openConnection();
+            conn.setRequestMethod("GET");
             conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (compatible; PersonalCFO/1.0; RSS reader)");
-            conn.setRequestProperty("Accept", "application/rss+xml, application/xml, text/xml, */*");
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36");
+            conn.setRequestProperty("Accept", "application/rss+xml, application/xml, text/xml, */*;q=0.8");
+            conn.setRequestProperty("Accept-Language", "en-US,en;q=0.9");
+            conn.setRequestProperty("Accept-Encoding", "gzip, deflate");
+            conn.setRequestProperty("Connection", "keep-alive");
+            conn.setRequestProperty("Upgrade-Insecure-Requests", "1");
             conn.setConnectTimeout(newsProperties.getFetchTimeoutMs());
             conn.setReadTimeout(newsProperties.getFetchTimeoutMs());
-            conn.connect();
+            conn.setInstanceFollowRedirects(true);
+            conn.setUseCaches(false);
 
             int httpCode = conn.getResponseCode();
-            if (httpCode == 403 || httpCode == 404 || httpCode == 410) {
+            if (httpCode == 403 || httpCode == 404 || httpCode == 410 || httpCode == 503) {
                 log.warn("HTTP {} from '{}' ({}), skipping — consider disabling this source",
                         httpCode, sourceName, rssUrl);
                 return 0;
             }
 
             SyndFeedInput input = new SyndFeedInput();
-            input.setAllowDoctypes(true);   // ET and some other Indian feeds include DOCTYPE declarations
-            input.setXmlHealerOn(true);     // tolerates malformed XML (e.g. MOSPI, PIB encoding issues)
-            SyndFeed feed = input.build(new XmlReader(conn));
+            input.setAllowDoctypes(true);
+            input.setXmlHealerOn(true);
+            SyndFeed feed;
+            try (InputStream rawStream = conn.getInputStream()) {
+                // Decompress gzip if the server chose to compress (we sent Accept-Encoding: gzip)
+                InputStream in = "gzip".equalsIgnoreCase(conn.getContentEncoding())
+                        ? new GZIPInputStream(rawStream) : rawStream;
+                byte[] rawBytes = in.readAllBytes();
+                String ct = conn.getContentType();
+                // Sites behind Cloudflare/bot-protection return an HTML challenge page instead of XML.
+                // Detect early so we avoid noisy XML parse errors and route straight to HTML fallback.
+                if (ct != null && ct.toLowerCase().contains("text/html")) {
+                    log.warn("Source '{}' ({}) returned HTML instead of XML — bot-protected, trying HTML fallback",
+                            sourceName, rssUrl);
+                    return fallbackHtmlScrape(sourceName, rssUrl, category, userSymbols);
+                }
+                Charset charset = StandardCharsets.UTF_8;
+                if (ct != null && ct.contains("charset=")) {
+                    try { charset = Charset.forName(ct.split("charset=")[1].split(";")[0].trim()); }
+                    catch (Exception ignored) {}
+                }
+                // Fix bare & not part of a valid XML entity (common in FE, BT, economy-watch feeds)
+                String rawXml = new String(rawBytes, charset)
+                        .replaceAll("&(?![a-zA-Z#][a-zA-Z0-9]*;)", "&amp;");
+                feed = input.build(new StringReader(rawXml));
+            }
 
             List<SyndEntry> entries = feed.getEntries();
 
@@ -159,6 +193,10 @@ public class NewsAggregatorService {
             log.warn("Failed to fetch RSS from '{}' ({}): {}", sourceName, rssUrl, e.getMessage());
             // Fallback: try Jsoup HTML scrape
             saved += fallbackHtmlScrape(sourceName, rssUrl, category, userSymbols);
+        } finally {
+            if (conn != null) {
+                conn.disconnect();
+            }
         }
         return saved;
     }
@@ -167,7 +205,10 @@ public class NewsAggregatorService {
         try {
             org.jsoup.nodes.Document doc = Jsoup.connect(siteUrl)
                     .timeout(newsProperties.getFetchTimeoutMs())
-                    .userAgent("Mozilla/5.0 (compatible; PersonalCFO/1.0)")
+                    .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .referrer("https://www.google.com")
                     .get();
 
             // Collect all candidate URLs first for batch dedup

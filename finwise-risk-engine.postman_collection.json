@@ -1,0 +1,444 @@
+{
+  "info": {
+    "name": "Finwise — Risk Engine & Research",
+    "description": "Tests for the uncommitted Risk Engine (Phase 0-3) changes: quant risk decomposition, technical analysis, RESEARCH intent routing, Nifty 50 benchmark ingestion, and RSS feed fixes.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "symbol",
+      "value": "HDFCBANK",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "0 — Seed Data",
+      "item": [
+        {
+          "name": "Fetch prices (all holdings)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/fetch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "fetch"]
+            },
+            "description": "Triggers YahooFinancePriceProvider for all holdings. Run this first — risk engine and technical analysis need price history. Watch logs for [PriceService] SUSPECT_GAP warnings (split detection) and adjusted_close being saved."
+          }
+        },
+        {
+          "name": "Fetch prices (single symbol)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/fetch/{{symbol}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "fetch", "{{symbol}}"]
+            },
+            "description": "Fetch and persist price history for one NSE symbol. Change {{symbol}} to test INFY, RELIANCE, etc. Also verifies the Yahoo URL fix (.NS suffix added automatically; ^NSEI passes through unchanged)."
+          }
+        },
+        {
+          "name": "Fetch Nifty 50 benchmark (via scheduler trigger)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/fetch/^NSEI",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "fetch", "^NSEI"]
+            },
+            "description": "Manually seeds the Nifty 50 benchmark (^NSEI) that the scheduler would pull at 4 PM. Required for beta and tracking-error computation. Watch logs for: [PriceService] Benchmark ^NSEI: N new records saved."
+          }
+        },
+        {
+          "name": "Sync price to portfolio values",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/sync",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "sync"]
+            },
+            "description": "Updates Investment.currentValue from latest StockPriceHistory. Run after fetch so that PortfolioRiskService uses correct market-value weights."
+          }
+        },
+        {
+          "name": "Fetch news (all sources)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/news/fetch",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "news", "fetch"]
+            },
+            "description": "Tests the overhauled NewsAggregatorService: gzip decompression, Chrome UA, Cloudflare HTML detection, & sanitization. Watch logs — previously-failing sources (PIB, ET rssfeeds, Guardian replacing Reuters) should now succeed. 503 sources still return 0 gracefully."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1 — Intent Classifier & Chat",
+      "item": [
+        {
+          "name": "Chat — RESEARCH intent (verb + symbol)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Should I buy HDFCBANK? Analyse the technicals\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "Triggers RESEARCH path. IntentClassifier detects symbol (HDFCBANK) + research verb (buy/analyse). Response should include RSI, SMA, beta, VaR numbers from the evidence pack. Log: [CFO.chat] intent=RESEARCH symbol=HDFCBANK confidence=0.9"
+          }
+        },
+        {
+          "name": "Chat — RESEARCH intent (short ticker, no verb)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"What do you think about INFY\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "Short message (≤6 words) with a ticker still triggers RESEARCH even without a verb. confidence=0.7. Log: [CFO.chat] intent=RESEARCH symbol=INFY confidence=0.7"
+          }
+        },
+        {
+          "name": "Chat — RESEARCH intent (Hindi / Hinglish)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"RELIANCE lena chahiye kya?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "Tests Hinglish verb 'lena chahiye' in RESEARCH_VERBS set. Should route to RESEARCH with symbol=RELIANCE."
+          }
+        },
+        {
+          "name": "Chat — PLANNING intent (no symbol routing)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Help me plan my retirement corpus with SIP\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "PLANNING keywords (retirement, corpus, SIP) should NOT trigger stock research. Uses existing portfolio context layout. Log: [CFO.chat] intent=PLANNING symbol=null confidence=0.8"
+          }
+        },
+        {
+          "name": "Chat — PORTFOLIO_REVIEW intent (default)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"How is my portfolio doing today?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "Falls through to PORTFOLIO_REVIEW (default). Uses buildFullContext. Log: [CFO.chat] intent=PORTFOLIO_REVIEW symbol=null confidence=1.0"
+          }
+        },
+        {
+          "name": "Chat — RESEARCH with unknown symbol",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"message\": \"Should I buy XYZFAKE stock?\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/cfo/chat",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "chat"]
+            },
+            "description": "Symbol not in gazetteer + no price history. Response must contain UNKNOWN_SYMBOL and DATA_INCOMPLETE:PRICE_HISTORY warnings. LLM must NOT invent data from training recall."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 — Daily Brief (Quant Risk Block)",
+      "item": [
+        {
+          "name": "Get daily brief",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/brief",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "brief"]
+            },
+            "description": "Run AFTER seeding prices. The 'content' field should now contain:\n• '## Risk Decomposition (Quantitative)' — Annualized Vol, Beta, VaR 95/99, CVaR, Sharpe, Sortino, Tracking Error, top-3 risk contributors\n• '## News-Sentiment Risk Scorecard' (was 'Risk Scorecard') — the old news-signal score, now clearly labeled\n• '## Technical Signals (Top Holdings)' — RSI, SMA, Trend labels instead of raw price strings\nIf price history is insufficient, the Risk Decomposition block is silently omitted."
+          }
+        },
+        {
+          "name": "Get after-hours insight",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/insights/AFTER_HOURS_BRIEF",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "insights", "AFTER_HOURS_BRIEF"]
+            },
+            "description": "After-hours brief also uses appendQuantRiskDecomposition. Same risk block should appear here."
+          }
+        },
+        {
+          "name": "Get market insight",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/insights/MARKET_INSIGHT",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "insights", "MARKET_INSIGHT"]
+            },
+            "description": "Mid-day/post-close insight. Also uses the new quant risk + news-sentiment split."
+          }
+        },
+        {
+          "name": "Get goal advice",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/goals/advice",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "goals", "advice"]
+            },
+            "description": "Goal advice path — @Transactional removed. Should still work correctly."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 — Technical Signals",
+      "item": [
+        {
+          "name": "Get holdings (check symbol + currentValue)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/holdings",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "holdings"]
+            },
+            "description": "Verify that holdings have symbols and currentValue populated. PortfolioRiskService uses currentValue for market-value weights; if null the symbol is excluded."
+          }
+        },
+        {
+          "name": "Check price providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/providers",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "providers"]
+            },
+            "description": "Confirms YahooFinancePriceProvider is registered. Also verifies the URL template change ({ticker} replaces {symbol}.NS) didn't break provider wiring."
+          }
+        },
+        {
+          "name": "Fetch price — index symbol ^NSEI (no .NS suffix)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/fetch/%5ENSEI",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "fetch", "%5ENSEI"]
+            },
+            "description": "URL-encoded ^NSEI (%5ENSEI). Verifies the Yahoo provider fix: index symbols starting with ^ are passed as-is (no .NS appended). Should return 200 with pricesStored > 0."
+          }
+        },
+        {
+          "name": "Fetch price — equity symbol (gets .NS appended)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/prices/fetch/RELIANCE",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "prices", "fetch", "RELIANCE"]
+            },
+            "description": "Normal NSE equity — should have .NS appended internally (RELIANCE → RELIANCE.NS). adjClose column should be populated from Yahoo's indicators.adjclose array."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 — News Pipeline",
+      "item": [
+        {
+          "name": "Get news (all recent)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/news?limit=20",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "news"],
+              "query": [
+                { "key": "limit", "value": "20" }
+              ]
+            },
+            "description": "After running news/fetch, verify articles are being saved from the updated sources (Guardian, PIB with ModId=6, ET rssfeeds format, Hindu Business Line)."
+          }
+        },
+        {
+          "name": "Get personalized news",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/news/personalized",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "news", "personalized"]
+            },
+            "description": "Personalized news filtered by user holdings. StockIntelligenceService.analyze() also uses this data for the RESEARCH path's 'Recent News' block."
+          }
+        },
+        {
+          "name": "Trigger LLM review on articles",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/news/review",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "news", "review"]
+            },
+            "description": "Triggers async LlmRefinementService. The executor bean now has @Primary annotation — verify no Spring bean ambiguity errors at startup."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 — Repository / DB Regression",
+      "item": [
+        {
+          "name": "Get latest portfolio snapshot",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/portfolio",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "portfolio"]
+            },
+            "description": "Smoke test for AiInsightRepository change: findFirstByUserIdAndInsightDateAndInsightTypeOrderByCreatedAtDesc replaced the @Query. If this loads without 500, the derived query is wired correctly."
+          }
+        },
+        {
+          "name": "Get all insights (pagination)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/insights?page=0&size=5",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "insights"],
+              "query": [
+                { "key": "page", "value": "0" },
+                { "key": "size", "value": "5" }
+              ]
+            },
+            "description": "Paginated insight history. Verifies the @Transactional annotations removed from CFOAdvisorService methods don't cause lazy-load issues (open-in-view=false is now set)."
+          }
+        },
+        {
+          "name": "Get insight by type — DAILY_BRIEF",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/insights/DAILY_BRIEF",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "insights", "DAILY_BRIEF"]
+            },
+            "description": "Hits findTopByUserIdAndInsightTypeOrderByCreatedAtDesc. Verifies the repository still resolves the latest brief correctly after the @Query was replaced."
+          }
+        },
+        {
+          "name": "Get insight by type — GOAL_ADVICE",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/insights/GOAL_ADVICE",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "insights", "GOAL_ADVICE"]
+            }
+          }
+        },
+        {
+          "name": "Get recent transactions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/cfo/transactions/recent",
+              "host": ["{{base_url}}"],
+              "path": ["api", "cfo", "transactions", "recent"]
+            },
+            "description": "Regression check — open-in-view=false means lazy collections must be loaded within the service transaction. If this returns 500 with LazyInitializationException, a @Transactional was removed incorrectly."
+          }
+        }
+      ]
+    }
+  ]
+}
