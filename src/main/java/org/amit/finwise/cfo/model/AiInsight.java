@@ -60,6 +60,7 @@ public class AiInsight {
 
     public enum InsightType {
         DAILY_BRIEF,       // Morning CFO brief
+        AFTER_HOURS_BRIEF, // End-of-day CFO brief
         PORTFOLIO_ALERT,   // Significant portfolio change
         GOAL_ADVICE,       // Goal-specific recommendation
         NEWS_SUMMARY,      // Curated news digest

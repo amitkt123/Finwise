@@ -43,10 +43,23 @@ public class StockPriceHistory {
     @Column(precision = 12, scale = 2)
     private BigDecimal closePrice;
 
+    /** Corporate-action adjusted close (split + dividend adjusted). Sourced from Yahoo adjclose. */
+    @Column(precision = 12, scale = 4)
+    private BigDecimal adjustedClose;
+
     private Long volume;
 
     /** Day-over-day percentage change in close price */
     private Double priceChangePercent;
+
+    /**
+     * Data quality classification. SUSPECT_GAP marks large unexplained moves (likely splits
+     * or stale data errors) that must be excluded from return series.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(length = 20)
+    @Builder.Default
+    private DataQualityFlag dataQualityFlag = DataQualityFlag.OK;
 
     // ── Circuit breaker tracking ──────────────────────────────────────────────
 
