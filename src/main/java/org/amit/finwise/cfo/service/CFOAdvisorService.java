@@ -17,9 +17,13 @@ import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
 import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.repository.UserProfileRepository;
+import org.amit.finwise.cfo.model.FactorRiskReport;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.model.StockDeepDive;
+import org.amit.finwise.cfo.model.StockScorecard;
 import org.amit.finwise.cfo.model.TechnicalSnapshot;
+import org.amit.finwise.cfo.service.analytics.FactorModelService;
+import org.amit.finwise.cfo.service.analytics.PortfolioPerformanceService;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.TechnicalAnalysisService;
 import org.amit.finwise.cfo.service.llm.LLMMessage;
@@ -66,9 +70,12 @@ public class CFOAdvisorService {
     private final StockPriceHistoryRepository stockPriceHistoryRepository;
     private final PolicyIntelligenceService policyIntelligenceService;
     private final PortfolioRiskService portfolioRiskService;
+    private final FactorModelService factorModelService;
+    private final PortfolioPerformanceService portfolioPerformanceService;
     private final TechnicalAnalysisService technicalAnalysisService;
     private final IntentClassifier intentClassifier;
     private final StockIntelligenceService stockIntelligenceService;
+    private final org.amit.finwise.investment.service.TaxHarvestingService taxHarvestingService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -105,15 +112,18 @@ public class CFOAdvisorService {
             ## Research Mode Instructions
             You are analyzing a specific stock at the user's request. Follow this structure exactly:
 
-            1. **Quick Verdict**: one of INITIATE / AVOID / WAIT-FOR-PULLBACK / NEEDS-MORE-DATA
-            2. **Data Evidence**: cite specific numbers from the ## Stock Deep-Dive block (RSI, SMA, beta, VaR, etc.)
-            3. **Thesis**: 2-3 sentences anchored to the evidence pack, NOT general knowledge
-            4. **Break-Condition**: one falsifiable condition that would reverse the verdict
-            5. **Fit-to-Portfolio**: use the Portfolio Fit section — state how this position changes portfolio risk
-            6. **Concrete Action**: specific entry condition, suggested position size vs portfolio, and one key watch level
+            1. **Quick Verdict**: use the Scorecard Recommendation exactly: BUY / WAIT / AVOID / NEEDS_MORE_DATA
+            2. **Scorecard First**: cite total score, confidence, and component scores before narrative thesis
+            3. **Data Evidence**: cite specific computed evidence from the ## Stock Scorecard and ## Stock Deep-Dive blocks
+            4. **Thesis**: 2-3 sentences anchored to the evidence pack, NOT general knowledge
+            5. **Break-Condition**: one falsifiable condition that would reverse the verdict
+            6. **Fit-to-Portfolio**: use the Portfolio Fit section — state how this position changes portfolio risk
+            7. **Concrete Action**: specific entry condition, suggested position size vs portfolio, and one key watch level
 
             Rules:
-            - Every claim must cite a specific metric from the context (e.g. "RSI=72 → overbought", "β=1.4 → amplifies Nifty moves")
+            - Never override the Java-computed Scorecard Recommendation.
+            - If confidence < 50, refuse a hard buy/wait/avoid call and explain missing data.
+            - Every claim must cite a specific metric from the context (e.g. "valuationScore=72", "RSI=72 → overbought", "β=1.4 → amplifies Nifty moves")
             - If a field shows DATA_INCOMPLETE or INSUFFICIENT_HISTORY, declare the gap. Do NOT use training-data recall to fill missing live data.
             - Confidence on each recommendation must cite which data point drives it (0.0–1.0)
             - If hasPriceHistory=false, respond with NEEDS-MORE-DATA and explain why no live data is available
@@ -412,6 +422,33 @@ public class CFOAdvisorService {
         }
         ctx.append("\n");
 
+        // Scorecard before narrative inputs: this is the authoritative recommendation.
+        StockScorecard scorecard = deepDive.scorecard();
+        if (scorecard != null) {
+            ctx.append("## Stock Scorecard (computed, authoritative)\n");
+            ctx.append(String.format("Recommendation: %s | Total Score: %.1f/100 | Confidence: %d/100 | Expected Return Band: %s%n",
+                    scorecard.recommendation(), scorecard.totalScore(), scorecard.confidence(), scorecard.expectedReturnBand()));
+            ctx.append(String.format("Components: valuation=%d, quality=%d, growth=%d, momentum=%d, risk=%d, newsMacro=%d, portfolioFit=%d%n",
+                    scorecard.valuationScore(), scorecard.qualityScore(), scorecard.growthScore(),
+                    scorecard.momentumScore(), scorecard.riskScore(), scorecard.newsMacroScore(),
+                    scorecard.portfolioFitScore()));
+            if (!scorecard.dataGaps().isEmpty()) {
+                ctx.append("Scorecard Data Gaps: ").append(String.join("; ", scorecard.dataGaps())).append("\n");
+            }
+            ctx.append("Bull Case:\n");
+            scorecard.bullCase().forEach(item -> ctx.append("- ").append(item).append("\n"));
+            ctx.append("Bear Case:\n");
+            scorecard.bearCase().forEach(item -> ctx.append("- ").append(item).append("\n"));
+            ctx.append("Key Risks:\n");
+            scorecard.keyRisks().forEach(item -> ctx.append("- ").append(item).append("\n"));
+            ctx.append("Evidence Items:\n");
+            scorecard.evidenceItems().stream().limit(12).forEach(item ->
+                    ctx.append(String.format("- [%s] %s=%s | %s | direction=%s | confidence=%d | source=%s | asOf=%s%n",
+                            item.category(), item.metricName(), item.value(), item.interpretation(),
+                            item.direction(), item.confidence(), item.source(), item.asOf())));
+            ctx.append("\n");
+        }
+
         // Live quote
         if (deepDive.lastClose() != null) {
             ctx.append("### Live Quote\n");
@@ -504,6 +541,7 @@ public class CFOAdvisorService {
 
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);   // Phase 1: real portfolio risk math
+        appendFactorRiskReport(ctx, userId);          // Phase 8: multi-factor decomposition
         appendNewsSentimentRisk(ctx, userId);         // news-based risk signal (renamed)
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
@@ -512,6 +550,7 @@ public class CFOAdvisorService {
         appendSectorRiskMap(ctx, userId);
         appendPolicyIntelligenceContext(ctx, userId, null, 6);
         appendActiveGoals(ctx, userId);
+        appendTaxPlanning(ctx, userId);
         appendRecentTransactions(ctx, userId, 7);
         appendTodaysNews(ctx, userId, 10);
 
@@ -523,6 +562,7 @@ public class CFOAdvisorService {
 
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);
+        appendFactorRiskReport(ctx, userId);
         appendNewsSentimentRisk(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
         appendPortfolioHoldings(ctx, userId);
@@ -540,6 +580,7 @@ public class CFOAdvisorService {
 
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);
+        appendFactorRiskReport(ctx, userId);
         appendNewsSentimentRisk(ctx, userId);
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
@@ -548,6 +589,7 @@ public class CFOAdvisorService {
         appendSectorRiskMap(ctx, userId);
         appendPolicyIntelligenceContext(ctx, userId, userMessage, 8);
         appendActiveGoals(ctx, userId);
+        appendTaxPlanning(ctx, userId);
         appendRecentTransactions(ctx, userId, 30);
         appendTodaysNews(ctx, userId, 8);
 
@@ -1055,26 +1097,36 @@ public class CFOAdvisorService {
             if (rd.isLowConfidence()) {
                 ctx.append("⚠ LOW_CONFIDENCE: insufficient price history for some holdings");
                 if (!rd.excludedSymbols().isEmpty()) {
-                    ctx.append(" — excluded (INSUFFICIENT_HISTORY): ")
-                       .append(String.join(", ", rd.excludedSymbols()));
+                    ctx.append(String.format(" — excluded (INSUFFICIENT_HISTORY): %s = %.1f%% of portfolio value NOT in these risk figures",
+                            String.join(", ", rd.excludedSymbols()), rd.excludedWeightPct() * 100));
                 }
                 ctx.append("\n");
+            }
+            for (String note : rd.dataQualityNotes()) {
+                ctx.append("⚠ ").append(note).append("\n");
             }
 
             ctx.append(String.format("Period: %s → %s (%d trading days)\n",
                     rd.seriesFrom(), rd.seriesTo(), rd.observationCount()));
 
-            ctx.append(String.format("Annualized Volatility: %.2f%% (daily: %.3f%%)\n",
+            ctx.append(String.format("Annualized Volatility: %.2f%% (daily: %.3f%%)",
                     rd.annualizedVolatility() * 100, rd.dailyVolatility() * 100));
+            if (rd.shrinkageIntensity() != null)
+                ctx.append(String.format(" | Ledoit-Wolf shrinkage δ=%.2f", rd.shrinkageIntensity()));
+            ctx.append("\n");
 
             ctx.append(String.format("Portfolio Beta (vs Nifty 50): %.2f\n", rd.portfolioBeta()));
 
             ctx.append(String.format(
-                    "1-Day VaR 95%% — Parametric: ₹%.0f | Historical: ₹%.0f\n",
-                    rd.var95Parametric(), rd.var95Historical()));
+                    "1-Day VaR 95%% — Parametric: ₹%.0f | Cornish-Fisher (fat-tail adjusted): ₹%.0f | Historical: ₹%.0f\n",
+                    rd.var95Parametric(), rd.var95CornishFisher(), rd.var95Historical()));
             ctx.append(String.format(
-                    "1-Day VaR 99%% — Parametric: ₹%.0f\n", rd.var99Parametric()));
+                    "1-Day VaR 99%% — Parametric: ₹%.0f | Cornish-Fisher: ₹%.0f\n",
+                    rd.var99Parametric(), rd.var99CornishFisher()));
             ctx.append(String.format("Expected Shortfall (CVaR 95%%): ₹%.0f\n", rd.cvar95()));
+            ctx.append(String.format("Return Distribution: skew %.2f | excess kurtosis %.2f%s\n",
+                    rd.returnSkewness(), rd.returnExcessKurtosis(),
+                    rd.returnExcessKurtosis() > 1 ? " (fat tails — prefer Cornish-Fisher/Historical VaR)" : ""));
 
             ctx.append(String.format("Diversification Ratio: %.2f | Effective Bets (ENB): %.1f\n",
                     rd.diversificationRatio(), rd.effectiveNumberOfBets()));
@@ -1099,10 +1151,146 @@ public class CFOAdvisorService {
                             c.weight() * 100,
                             c.beta())));
 
-            ctx.append("Headline: ").append(rd.headline()).append("\n\n");
+            ctx.append("Headline: ").append(rd.headline()).append("\n");
+
+            // Time-weighted return — actual performance independent of SIP timing
+            portfolioPerformanceService.computeTwrr(userId).ifPresent(twrr -> {
+                ctx.append(String.format(
+                        "TWRR (%s → %s): %.2f%% cumulative", twrr.from(), twrr.to(), twrr.twrr() * 100));
+                if (!Double.isNaN(twrr.annualizedTwrr()))
+                    ctx.append(String.format(" | %.2f%% annualized", twrr.annualizedTwrr() * 100));
+                ctx.append(" — use this, not cost-basis P&L, when judging performance under SIPs\n");
+                if (!Double.isNaN(twrr.annualizedBenchmarkTwrr())) {
+                    ctx.append(String.format(
+                            "vs Nifty 50 (same window): %.2f%% annualized | Active return: %+.2f%%",
+                            twrr.annualizedBenchmarkTwrr() * 100, twrr.activeReturnAnnualized() * 100));
+                    if (!Double.isNaN(twrr.informationRatio()))
+                        ctx.append(String.format(" | Information Ratio: %.2f", twrr.informationRatio()));
+                    ctx.append(" — a TWRR without the benchmark is uninterpretable; judge skill on active return\n");
+                }
+            });
+            ctx.append("\n");
 
         } catch (Exception e) {
             log.warn("[CFO] Risk decomposition failed, skipping block: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Injects a ## Factor Risk Model block computed by FactorModelService (Phase 8).
+     * Per-holding OLS betas vs MKT/SIZE/own-sector index, portfolio factor exposures,
+     * and the systematic/idiosyncratic variance split. The LLM narrates, it does not
+     * calculate. Silently omitted when index history or holdings data is insufficient.
+     */
+    private void appendFactorRiskReport(StringBuilder ctx, String userId) {
+        try {
+            Optional<FactorRiskReport> frOpt = factorModelService.compute(userId);
+            if (frOpt.isEmpty()) return;
+
+            FactorRiskReport fr = frOpt.get();
+            ctx.append("## Factor Risk Model (Quantitative)\n");
+
+            if (fr.isLowConfidence()) {
+                ctx.append("⚠ LOW_CONFIDENCE: factor estimates degraded — see notes below\n");
+            }
+            for (String note : fr.dataQualityNotes()) {
+                ctx.append("⚠ ").append(note).append("\n");
+            }
+
+            ctx.append(String.format("Window: %s → %s | Factors: %s\n",
+                    fr.seriesFrom(), fr.seriesTo(), String.join(", ", fr.factorNames())));
+
+            ctx.append("Portfolio factor exposures: ");
+            ctx.append(fr.portfolioFactorBetas().entrySet().stream()
+                    .map(e -> String.format("%s β=%.2f", e.getKey(), e.getValue()))
+                    .collect(Collectors.joining(" | ")));
+            ctx.append("\n");
+
+            if (!Double.isNaN(fr.totalVolAnnualized())) {
+                ctx.append(String.format(
+                        "Volatility split — Systematic: %.2f%% | Idiosyncratic: %.2f%% | Model total: %.2f%% (%.0f%% systematic)\n",
+                        fr.systematicVolAnnualized() * 100,
+                        fr.idiosyncraticVolAnnualized() * 100,
+                        fr.totalVolAnnualized() * 100,
+                        fr.systematicSharePct()));
+                ctx.append("Systematic variance by factor: ");
+                ctx.append(fr.factorVarianceSharePct().entrySet().stream()
+                        .map(e -> String.format("%s %.0f%%", e.getKey(), e.getValue()))
+                        .collect(Collectors.joining(" | ")));
+                ctx.append("\n");
+                if (!Double.isNaN(fr.directVolAnnualized())) {
+                    ctx.append(String.format(
+                            "Cross-check — direct covariance (wᵀΣw) vol: %.2f%% vs model %.2f%%; the gap is estimation noise, both are valid estimates\n",
+                            fr.directVolAnnualized() * 100, fr.totalVolAnnualized() * 100));
+                }
+            }
+
+            ctx.append("Per-holding factor betas (* = |t|≥2; t-stats are HAC-naive):\n");
+            fr.holdings().stream().limit(8).forEach(h -> {
+                StringBuilder line = new StringBuilder(String.format(
+                        "  - %s (w %.1f%%): MKT %.2f%s", h.symbol(), h.weight() * 100,
+                        h.betaMkt(), h.isSignificant("MKT") ? "*" : ""));
+                if (h.betaSize() != null) {
+                    line.append(String.format(" | SIZE %.2f%s", h.betaSize(),
+                            h.isSignificant("SIZE") ? "*" : ""));
+                }
+                if (h.betaSector() != null) {
+                    line.append(String.format(" | %s %.2f%s", h.sectorFactor(), h.betaSector(),
+                            h.isSignificant(h.sectorFactor()) ? "*" : ""));
+                }
+                line.append(String.format(" | R² %.2f | idio vol %.1f%%",
+                        h.rSquared(), h.idioVolAnnualized() * 100));
+                ctx.append(line).append("\n");
+            });
+
+            ctx.append("Headline: ").append(fr.headline()).append("\n\n");
+
+        } catch (Exception e) {
+            log.warn("[CFO] Factor risk report failed, skipping block: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Injects a ## Tax Planning block: LTCG exemption headroom, harvestable lots,
+     * STCG→LTCG boundary waits, and loss-harvest candidates. All rupee figures
+     * are computed by TaxHarvestingService — the LLM narrates, it does not calculate.
+     * Suggestions only; nothing is ever executed.
+     */
+    private void appendTaxPlanning(StringBuilder ctx, String userId) {
+        try {
+            var plan = taxHarvestingService.suggest(userId);
+            boolean hasContent = plan.exemptionHeadroom().doubleValue() > 0
+                    || !plan.exemptionHarvest().isEmpty()
+                    || !plan.boundaryWait().isEmpty()
+                    || !plan.lossHarvest().isEmpty();
+            if (!hasContent) return;
+
+            ctx.append(String.format("## Tax Planning (FY %s → %s)\n", plan.fyStart(), plan.fyEnd()));
+            ctx.append(String.format("LTCG exemption headroom remaining: ₹%.0f\n",
+                    plan.exemptionHeadroom().doubleValue()));
+
+            if (!plan.exemptionHarvest().isEmpty()) {
+                ctx.append("Tax-free LTCG harvest candidates (sell + optional rebuy; rebuy resets holding period):\n");
+                plan.exemptionHarvest().stream().limit(3).forEach(c ->
+                        ctx.append(String.format("  - %s (lot of %s): sell ~%.0f units → realize ₹%.0f LTCG inside the exemption, saving ₹%.0f future tax\n",
+                                c.symbol(), c.buyDate(), c.unitsToSell(), c.ltcgRealized(), c.taxSavedVsLater())));
+            }
+            if (!plan.boundaryWait().isEmpty()) {
+                ctx.append("Lots about to turn long-term — selling now wastes the lower LTCG rate:\n");
+                plan.boundaryWait().stream().limit(3).forEach(c ->
+                        ctx.append(String.format("  - %s (lot of %s): long-term in %d days; waiting saves ₹%.0f on ₹%.0f gain\n",
+                                c.symbol(), c.buyDate(), c.daysToLongTerm(), c.taxSavingIfWaited(), c.unrealizedGain())));
+            }
+            if (!plan.lossHarvest().isEmpty()) {
+                ctx.append("Loss-harvest candidates (realizing the loss offsets gains):\n");
+                plan.lossHarvest().stream().limit(3).forEach(c ->
+                        ctx.append(String.format("  - %s (lot of %s): ₹%.0f unrealized loss — %s\n",
+                                c.symbol(), c.buyDate(), c.unrealizedLoss(), c.setOffScope())));
+            }
+            plan.notes().stream().limit(2).forEach(n -> ctx.append("⚠ ").append(n).append("\n"));
+            ctx.append("\n");
+        } catch (Exception e) {
+            log.warn("[CFO] Tax planning block failed, skipping: {}", e.getMessage());
         }
     }
 

@@ -29,6 +29,10 @@ public interface StockPriceHistoryRepository extends JpaRepository<StockPriceHis
 
     boolean existsBySymbolAndPriceDate(String symbol, LocalDate priceDate);
 
+    /** Nearest price entry at-or-before a date (grandfathering FMV lookup) */
+    Optional<StockPriceHistory> findFirstBySymbolAndPriceDateLessThanEqualOrderByPriceDateDesc(
+            String symbol, LocalDate priceDate);
+
     /** Latest price entries for multiple symbols (for portfolio volatility calc) */
     @Query("SELECT s FROM StockPriceHistory s WHERE s.symbol IN :symbols AND s.priceDate >= :since ORDER BY s.symbol, s.priceDate DESC")
     List<StockPriceHistory> findRecentBySymbols(@Param("symbols") List<String> symbols, @Param("since") LocalDate since);

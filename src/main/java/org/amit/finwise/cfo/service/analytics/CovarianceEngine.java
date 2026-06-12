@@ -1,6 +1,9 @@
 package org.amit.finwise.cfo.service.analytics;
 
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.math3.linear.Array2DRowRealMatrix;
+import org.apache.commons.math3.linear.EigenDecomposition;
+import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.stat.StatUtils;
 import org.apache.commons.math3.stat.correlation.Covariance;
 import org.springframework.stereotype.Component;
@@ -72,6 +75,36 @@ public class CovarianceEngine {
     }
 
     /**
+     * Ledoit-Wolf shrunk covariance matrix (constant-correlation target) on the
+     * unbiased N-1 scale, with a positive-semidefinite safety net.
+     *
+     * A convex combination of two PSD matrices is PSD in exact arithmetic, but
+     * near-singular sample matrices can carry tiny negative eigenvalues from
+     * floating-point error into downstream quadratic forms — clip them to zero.
+     */
+    public ShrinkageResult shrunkCovariance(AlignedSeries aligned) {
+        LedoitWolfShrinkage.Result r = LedoitWolfShrinkage.shrink(aligned.data());
+        return new ShrinkageResult(ensurePositiveSemiDefinite(r.sigma()), r.delta());
+    }
+
+    private static double[][] ensurePositiveSemiDefinite(double[][] m) {
+        EigenDecomposition eig = new EigenDecomposition(new Array2DRowRealMatrix(m));
+        double[] eigenvalues = eig.getRealEigenvalues();
+        boolean needsClipping = false;
+        for (double ev : eigenvalues) {
+            if (ev < -1e-10) { needsClipping = true; break; }
+        }
+        if (!needsClipping) return m;
+
+        log.warn("[CovEngine] Covariance matrix not PSD (min eigenvalue {}); clipping",
+                Arrays.stream(eigenvalues).min().orElse(Double.NaN));
+        RealMatrix v = eig.getV();
+        double[][] d = new double[eigenvalues.length][eigenvalues.length];
+        for (int i = 0; i < eigenvalues.length; i++) d[i][i] = Math.max(0, eigenvalues[i]);
+        return v.multiply(new Array2DRowRealMatrix(d)).multiply(v.transpose()).getData();
+    }
+
+    /**
      * Computes beta and covariance statistics for a single stock vs. a benchmark.
      * Uses only the intersection of dates between the two series.
      *
@@ -108,6 +141,140 @@ public class CovarianceEngine {
 
         double beta = varBench > 0 ? cov / varBench : Double.NaN;
         return new BetaStats(beta, cov, varBench, common.size());
+    }
+
+    /**
+     * Downside beta using only dates where benchmark return is negative.
+     */
+    public BetaStats downsideBetaStats(NavigableMap<LocalDate, Double> stockReturns,
+                                       NavigableMap<LocalDate, Double> benchmarkReturns) {
+        NavigableMap<LocalDate, Double> stockDownside = new TreeMap<>();
+        NavigableMap<LocalDate, Double> benchmarkDownside = new TreeMap<>();
+        for (LocalDate date : stockReturns.keySet()) {
+            Double benchmarkReturn = benchmarkReturns.get(date);
+            if (benchmarkReturn != null && benchmarkReturn < 0) {
+                stockDownside.put(date, stockReturns.get(date));
+                benchmarkDownside.put(date, benchmarkReturn);
+            }
+        }
+        return betaStats(stockDownside, benchmarkDownside);
+    }
+
+    /**
+     * Annualized EWMA volatility with RiskMetrics lambda=0.94 by default.
+     */
+    public double ewmaVolatilityAnnualized(NavigableMap<LocalDate, Double> returns, double lambda) {
+        if (returns == null || returns.isEmpty() || lambda <= 0 || lambda >= 1) return Double.NaN;
+        // Seed with the variance of the first ~20 observations only, then recurse over
+        // the remainder. Seeding with the FULL sample leaks future observations into
+        // the recursion; seeding with r_0² anchors to one observation that decays
+        // slowly at lambda=0.94.
+        double[] all = returns.values().stream().mapToDouble(Double::doubleValue).toArray();
+        int seedLen = Math.min(EWMA_SEED_OBSERVATIONS, all.length);
+        double variance = seedLen > 1
+                ? StatUtils.variance(Arrays.copyOfRange(all, 0, seedLen))
+                : all[0] * all[0];
+        for (int i = seedLen; i < all.length; i++) {
+            variance = lambda * variance + (1 - lambda) * all[i] * all[i];
+        }
+        return Math.sqrt(variance) * Math.sqrt(252.0);
+    }
+
+    static final int EWMA_SEED_OBSERVATIONS = 20;
+
+    /**
+     * Maximum drawdown from ascending adjusted-close prices.
+     * Returns a negative number, e.g. -0.25 for a 25% drawdown.
+     */
+    public double maxDrawdown(NavigableMap<LocalDate, Double> prices) {
+        if (prices == null || prices.isEmpty()) return Double.NaN;
+        double runningMax = Double.NEGATIVE_INFINITY;
+        double maxDrawdown = 0.0;
+        for (double price : prices.values()) {
+            if (price <= 0) continue;
+            runningMax = Math.max(runningMax, price);
+            if (runningMax > 0) {
+                maxDrawdown = Math.min(maxDrawdown, price / runningMax - 1.0);
+            }
+        }
+        return maxDrawdown;
+    }
+
+    /**
+     * Rolling beta keyed by the window end date.
+     */
+    public NavigableMap<LocalDate, Double> rollingBeta(NavigableMap<LocalDate, Double> stockReturns,
+                                                       NavigableMap<LocalDate, Double> benchmarkReturns,
+                                                       int window) {
+        NavigableMap<LocalDate, Double> result = new TreeMap<>();
+        if (window < 2) return result;
+        List<LocalDate> common = new ArrayList<>(stockReturns.keySet());
+        common.retainAll(benchmarkReturns.keySet());
+        Collections.sort(common);
+        for (int endExclusive = window; endExclusive <= common.size(); endExclusive++) {
+            NavigableMap<LocalDate, Double> stockWindow = new TreeMap<>();
+            NavigableMap<LocalDate, Double> benchWindow = new TreeMap<>();
+            for (LocalDate date : common.subList(endExclusive - window, endExclusive)) {
+                stockWindow.put(date, stockReturns.get(date));
+                benchWindow.put(date, benchmarkReturns.get(date));
+            }
+            BetaStats stats = betaStats(stockWindow, benchWindow);
+            result.put(common.get(endExclusive - 1), stats.beta());
+        }
+        return result;
+    }
+
+    /**
+     * Correlation during the worst benchmark-return days.
+     *
+     * @param worstFraction fraction of common dates to keep after sorting benchmark returns ascending.
+     */
+    public double stressedCorrelation(NavigableMap<LocalDate, Double> stockReturns,
+                                      NavigableMap<LocalDate, Double> benchmarkReturns,
+                                      double worstFraction) {
+        List<LocalDate> common = new ArrayList<>(stockReturns.keySet());
+        common.retainAll(benchmarkReturns.keySet());
+        if (common.size() < 2 || worstFraction <= 0 || worstFraction > 1) return Double.NaN;
+        common.sort(Comparator.comparingDouble(benchmarkReturns::get));
+        int keep = Math.max(2, (int) Math.ceil(common.size() * worstFraction));
+        double[] stock = new double[keep];
+        double[] bench = new double[keep];
+        for (int i = 0; i < keep; i++) {
+            LocalDate date = common.get(i);
+            stock[i] = stockReturns.get(date);
+            bench[i] = benchmarkReturns.get(date);
+        }
+        double meanStock = StatUtils.mean(stock);
+        double meanBench = StatUtils.mean(bench);
+        double cov = 0;
+        for (int i = 0; i < keep; i++) {
+            cov += (stock[i] - meanStock) * (bench[i] - meanBench);
+        }
+        cov /= (keep - 1);
+        double stockStd = Math.sqrt(StatUtils.variance(stock));
+        double benchStd = Math.sqrt(StatUtils.variance(bench));
+        return stockStd > 0 && benchStd > 0 ? cov / (stockStd * benchStd) : Double.NaN;
+    }
+
+    /**
+     * Average traded value proxy from close price and volume on overlapping dates.
+     */
+    public double averageTradedValue(NavigableMap<LocalDate, Double> closePrices,
+                                     NavigableMap<LocalDate, Long> volumes) {
+        if (closePrices == null || volumes == null || closePrices.isEmpty() || volumes.isEmpty()) {
+            return Double.NaN;
+        }
+        double sum = 0;
+        int count = 0;
+        for (Map.Entry<LocalDate, Double> priceEntry : closePrices.entrySet()) {
+            Long volume = volumes.get(priceEntry.getKey());
+            Double price = priceEntry.getValue();
+            if (volume != null && volume > 0 && price != null && price > 0) {
+                sum += price * volume;
+                count++;
+            }
+        }
+        return count > 0 ? sum / count : Double.NaN;
     }
 
     /**
@@ -202,6 +369,11 @@ public class CovarianceEngine {
             double covariance,
             double benchmarkVariance,
             int observations
+    ) {}
+
+    public record ShrinkageResult(
+            double[][] sigma,   // shrunk covariance, unbiased (N-1) scale, PSD
+            double delta        // Ledoit-Wolf intensity δ ∈ [0,1]
     ) {}
 
     public record MarginalImpact(

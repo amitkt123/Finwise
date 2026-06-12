@@ -78,12 +78,28 @@ public class MacroSnapshot {
 
     // ── Risk-Free Rate ──────────────────────────────────────────────────
 
+    /** 3-month Government Security yield (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal gsec3m;
+
+    /** 1-year Government Security yield (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal gsec1y;
+
+    /** 5-year Government Security yield (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal gsec5y;
+
     /** 10-Year Government Security yield (%) — used as R_f in Sharpe/Sortino */
     @Column(precision = 8, scale = 2)
     private BigDecimal gsecYield10Y;
 
-    /** Date 10Y G-sec yield was last updated */
+    /** Date G-sec yields were last updated */
     private LocalDate gsecYieldAsOf;
+
+    /** Curve slope: 10Y - 3M yield differential (bps) — positive = normal, negative = inverted */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal curveSlope10y3m;
 
     // ── Optional: Growth & Flows ─────────────────────────────────────────
 
@@ -94,13 +110,20 @@ public class MacroSnapshot {
     /** Date GDP figure is from */
     private LocalDate gdpAsOf;
 
-    /** FII net flow for the day (USD millions) */
+    /** FII net flow for the day (₹ Cr, negative = net selling). Source: NSE fiidiiTradeReact. */
     @Column(precision = 12, scale = 2)
     private BigDecimal fiiNetFlow;
 
-    /** DII net flow for the day (INR millions) */
+    /** DII net flow for the day (₹ Cr, negative = net selling). Source: NSE fiidiiTradeReact. */
     @Column(precision = 12, scale = 2)
     private BigDecimal diiNetFlow;
+
+    /**
+     * 5-day cumulative FII net flow (₹ Cr) across the latest snapshots.
+     * Below −10,000 Cr triggers the FLOW_PRESSURE macro regime.
+     */
+    @Column(precision = 12, scale = 2)
+    private BigDecimal fiiNetFlow5d;
 
     /** Date FII/DII flows are from */
     private LocalDate flowsAsOf;

@@ -2,12 +2,14 @@ package org.amit.finwise.cfo.service.analytics;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.config.RiskProperties;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.apache.commons.math3.stat.StatUtils;
-import org.springframework.beans.factory.annotation.Value;
+import org.apache.commons.math3.stat.descriptive.moment.Kurtosis;
+import org.apache.commons.math3.stat.descriptive.moment.Skewness;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -35,12 +37,7 @@ public class PortfolioRiskService {
     private final ReturnSeriesService returnSeriesService;
     private final CovarianceEngine covarianceEngine;
     private final InvestmentRepository investmentRepository;
-
-    @Value("${cfo.risk.risk-free-rate:0.071}")
-    private double riskFreeRate;           // 10Y G-sec yield (annualized)
-
-    @Value("${cfo.risk.lookback-days:365}")
-    private int lookbackDays;
+    private final RiskProperties riskProperties;
 
     private static final double SQRT_252 = Math.sqrt(252.0);
     private static final double ANNUAL_DAYS = 252.0;
@@ -85,7 +82,7 @@ public class PortfolioRiskService {
         allSymbols.add(StockPriceService.NIFTY_SYMBOL);
 
         // ── Return series ─────────────────────────────────────────────────────
-        LocalDate since = LocalDate.now().minusDays(lookbackDays);
+        LocalDate since = LocalDate.now().minusDays(riskProperties.getLookbackDays());
         Map<String, NavigableMap<LocalDate, Double>> allReturns =
                 returnSeriesService.getReturnSeries(allSymbols, since);
 
@@ -104,9 +101,19 @@ public class PortfolioRiskService {
             return Optional.empty();
         }
 
-        // Re-normalize weights to included-only market values
+        List<String> dataQualityNotes = new ArrayList<>();
+
+        // Re-normalize weights to included-only market values. The dropped weight is
+        // reported explicitly — silently re-normalizing understates risk when the
+        // excluded names are the volatile ones.
         double includedTotalWeight = included.stream()
                 .mapToDouble(s -> rawWeights.getOrDefault(s, 0.0)).sum();
+        double excludedWeightPct = Math.max(0.0, 1.0 - includedTotalWeight);
+        if (!excluded.isEmpty()) {
+            dataQualityNotes.add(String.format(
+                    "EXCLUDED_WEIGHT: %.1f%% of portfolio value excluded from covariance estimation (%s)",
+                    excludedWeightPct * 100, String.join(", ", excluded)));
+        }
         Map<String, Double> normalizedWeights = new LinkedHashMap<>();
         for (String sym : included) {
             normalizedWeights.put(sym, rawWeights.getOrDefault(sym, 0.0) / includedTotalWeight);
@@ -121,8 +128,20 @@ public class PortfolioRiskService {
             return Optional.empty();
         }
 
-        double[][] covMatrix = covarianceEngine.covarianceMatrix(aligned);
         int n = aligned.symbols().size();
+
+        // Ledoit-Wolf shrinkage stabilizes the matrix when N parameters approach
+        // T observations. With only 2 assets the single off-diagonal is estimated
+        // directly — shrinking toward "average correlation" would be circular.
+        double[][] covMatrix;
+        Double shrinkageIntensity = null;
+        if (riskProperties.isShrinkageEnabled() && n >= 3) {
+            CovarianceEngine.ShrinkageResult sr = covarianceEngine.shrunkCovariance(aligned);
+            covMatrix = sr.sigma();
+            shrinkageIntensity = sr.delta();
+        } else {
+            covMatrix = covarianceEngine.covarianceMatrix(aligned);
+        }
 
         // Weight vector in aligned symbol order
         double[] w = new double[n];
@@ -156,7 +175,16 @@ public class PortfolioRiskService {
                 NavigableMap<LocalDate, Double> stockSeries = stockReturns.get(sym);
                 if (stockSeries == null) continue;
                 CovarianceEngine.BetaStats bs = covarianceEngine.betaStats(stockSeries, niftyReturns);
-                double beta = Double.isNaN(bs.beta()) ? 0.0 : bs.beta();
+                // Unknown beta defaults to the market prior 1.0, not 0.0 — a zero
+                // would silently understate portfolio beta.
+                double beta;
+                if (Double.isNaN(bs.beta())) {
+                    beta = 1.0;
+                    dataQualityNotes.add("BETA_IMPUTED: " + sym
+                            + " — insufficient benchmark overlap; market beta 1.0 assumed");
+                } else {
+                    beta = bs.beta();
+                }
                 perHoldingBeta.put(sym, beta);
                 portfolioBeta += w[i] * beta;
             }
@@ -197,15 +225,42 @@ public class PortfolioRiskService {
         double var95Parametric = 1.645 * dailyVol * V;
         double var99Parametric = 2.326 * dailyVol * V;
 
+        // Cornish-Fisher VaR: Gaussian z-scores understate tail risk for the
+        // fat-tailed, negatively skewed returns typical of Indian equities.
+        // z_CF = z + (z²−1)/6·γ₁ + (z³−3z)/24·γ₂ − (2z³−5z)/36·γ₁²
+        // The expansion is a Gram-Charlier truncation, only reliable in a bounded
+        // skew/kurtosis domain — outside it the adjusted quantile can fall INSIDE
+        // the Gaussian one, so we substitute the parametric figure instead.
+        double skewness = new Skewness().evaluate(portfolioReturns);
+        double excessKurtosis = new Kurtosis().evaluate(portfolioReturns); // Commons Math returns excess kurtosis
+        double var95CornishFisher;
+        double var99CornishFisher;
+        if (cornishFisherValid(skewness, excessKurtosis)) {
+            var95CornishFisher = cornishFisherZ(-1.645, skewness, excessKurtosis) * -dailyVol * V;
+            var99CornishFisher = cornishFisherZ(-2.326, skewness, excessKurtosis) * -dailyVol * V;
+        } else {
+            var95CornishFisher = var95Parametric;
+            var99CornishFisher = var99Parametric;
+            dataQualityNotes.add(String.format(
+                    "CF_INVALID: skew=%.2f, exKurt=%.2f outside validity domain (|skew|≤2.5, exKurt≤10); parametric VaR substituted",
+                    skewness, excessKurtosis));
+        }
+
         double[] sortedReturns = portfolioReturns.clone();
         Arrays.sort(sortedReturns);
-        int var95Idx = Math.max(0, (int) Math.floor(0.05 * T) - 1);
-        double historicalReturn95 = sortedReturns[var95Idx];
+        double historicalReturn95 = interpolatedQuantile(sortedReturns, 0.05);
         double var95Historical = -historicalReturn95 * V;
 
+        // CVaR = E[loss | loss strictly worse than VaR95]. When nothing lies
+        // beyond the quantile, fall back to VaR95.
         double cvarSum = 0;
-        for (int t = 0; t <= var95Idx; t++) cvarSum += sortedReturns[t];
-        double cvar95 = var95Idx >= 0 ? -(cvarSum / (var95Idx + 1)) * V : 0;
+        int cvarCount = 0;
+        for (double r : sortedReturns) {
+            if (r >= historicalReturn95) break;
+            cvarSum += r;
+            cvarCount++;
+        }
+        double cvar95 = cvarCount > 0 ? -(cvarSum / cvarCount) * V : var95Historical;
 
         // ── Diversification ratio: (Σ wᵢ σᵢ) / σ_p ──────────────────────────
         double weightedVolSum = 0;
@@ -231,14 +286,19 @@ public class PortfolioRiskService {
 
         // ── Sharpe and Sortino ─────────────────────────────────────────────────
         double meanDailyReturn  = StatUtils.mean(portfolioReturns);
-        double annualizedReturn = meanDailyReturn * ANNUAL_DAYS;
+        // Geometric (compound) annualization; arithmetic mean × 252 understates
+        // the annual figure for high-return portfolios.
+        double annualizedReturn = Math.pow(1.0 + meanDailyReturn, ANNUAL_DAYS) - 1.0;
+        double riskFreeRate = riskProperties.getRiskFreeRate();
         double sharpe = annualizedVol > 0
                 ? (annualizedReturn - riskFreeRate) / annualizedVol : Double.NaN;
 
-        // Downside deviation: sqrt(E[min(r,0)²]) × √252
+        // Downside deviation with MAR = risk-free rate (not zero):
+        // DD = sqrt( (1/T) × Σ min(r_t − r_f_daily, 0)² ) × √252
+        double dailyRf = riskFreeRate / ANNUAL_DAYS;
         double sumSquaredDownside = Arrays.stream(portfolioReturns)
-                .filter(r -> r < 0)
-                .map(r -> r * r)
+                .filter(r -> r < dailyRf)
+                .map(r -> (r - dailyRf) * (r - dailyRf))
                 .sum();
         double annualizedDownsideDev = T > 0
                 ? Math.sqrt(sumSquaredDownside / T) * SQRT_252 : Double.NaN;
@@ -275,7 +335,9 @@ public class PortfolioRiskService {
                 "%.1f%% of portfolio variance comes from %s; effective bets = %.1f",
                 top2Pct, topNames, enb);
 
-        boolean isLowConfidence = T < ReturnSeriesService.MIN_OBSERVATIONS || !excluded.isEmpty();
+        boolean isLowConfidence = T < ReturnSeriesService.MIN_OBSERVATIONS
+                || !excluded.isEmpty()
+                || excludedWeightPct > 0.25;
 
         log.info("[RiskEngine] Computed: vol={}%, beta={}, ENB={}, VaR95=₹{}, excluded={}",
                 String.format("%.1f", annualizedVol * 100),
@@ -285,16 +347,59 @@ public class PortfolioRiskService {
                 excluded);
 
         return Optional.of(new RiskDecomposition(
-                included, excluded, T,
+                included, excluded,
+                excludedWeightPct,
+                Collections.unmodifiableList(dataQualityNotes),
+                T,
                 commonDates.getFirst(), commonDates.getLast(),
                 isLowConfidence,
                 annualizedVol, dailyVol,
+                shrinkageIntensity,
                 portfolioBeta, perHoldingBeta,
-                var95Parametric, var99Parametric, var95Historical, cvar95,
+                var95Parametric, var99Parametric,
+                var95CornishFisher, var99CornishFisher,
+                var95Historical, cvar95,
+                skewness, excessKurtosis,
                 Collections.unmodifiableList(contributors),
                 diversificationRatio, enb, nameHHI, sectorHHI,
                 sharpe, sortino, trackingError,
                 headline
         ));
+    }
+
+    /**
+     * Cornish-Fisher expansion of a Gaussian quantile for skewness γ₁ and
+     * excess kurtosis γ₂. For the loss tail pass a negative z (e.g. −1.645).
+     */
+    static double cornishFisherZ(double z, double skewness, double excessKurtosis) {
+        if (Double.isNaN(skewness) || Double.isNaN(excessKurtosis)) return z;
+        return z
+                + (z * z - 1) / 6.0 * skewness
+                + (z * z * z - 3 * z) / 24.0 * excessKurtosis
+                - (2 * z * z * z - 5 * z) / 36.0 * skewness * skewness;
+    }
+
+    /**
+     * Validity domain of the Cornish-Fisher expansion. Beyond |γ₁| 2.5 or γ₂ 10
+     * the truncated series is non-monotone and can place the adjusted quantile
+     * inside the Gaussian one. NaN moments pass through (cornishFisherZ degrades
+     * to the plain quantile in that case).
+     */
+    static boolean cornishFisherValid(double skewness, double excessKurtosis) {
+        return !(Math.abs(skewness) > 2.5 || excessKurtosis > 10.0);
+    }
+
+    /**
+     * Linear-interpolated empirical quantile (Hyndman-Fan R-7, the R default):
+     * h = (T−1)p; q = x_⌊h⌋ + (h−⌊h⌋)(x_⌊h⌋₊₁ − x_⌊h⌋) on the 0-indexed sorted array.
+     */
+    static double interpolatedQuantile(double[] sortedAscending, double p) {
+        int T = sortedAscending.length;
+        if (T == 0) return Double.NaN;
+        if (T == 1) return sortedAscending[0];
+        double h = (T - 1) * p;
+        int lo = (int) Math.floor(h);
+        if (lo + 1 >= T) return sortedAscending[T - 1];
+        return sortedAscending[lo] + (h - lo) * (sortedAscending[lo + 1] - sortedAscending[lo]);
     }
 }

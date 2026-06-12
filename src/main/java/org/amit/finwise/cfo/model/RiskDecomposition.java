@@ -14,6 +14,8 @@ public record RiskDecomposition(
         // ── Data quality ─────────────────────────────────────────────────────────
         List<String> includedSymbols,
         List<String> excludedSymbols,   // insufficient price history (< MIN_OBSERVATIONS)
+        double excludedWeightPct,       // portfolio weight of excluded symbols, before re-normalization
+        List<String> dataQualityNotes,  // BETA_IMPUTED / EXCLUDED_WEIGHT / CF_INVALID …
         int observationCount,           // aligned trading-day count used in covariance
         LocalDate seriesFrom,
         LocalDate seriesTo,
@@ -22,16 +24,23 @@ public record RiskDecomposition(
         // ── Volatility ───────────────────────────────────────────────────────────
         double annualizedVolatility,    // σ_p × √252
         double dailyVolatility,         // σ_p = √(w^T Σ w)
+        Double shrinkageIntensity,      // Ledoit-Wolf δ ∈ [0,1]; null when shrinkage not applied
 
         // ── Beta ─────────────────────────────────────────────────────────────────
         double portfolioBeta,           // Σ wᵢ βᵢ vs Nifty 50
         Map<String, Double> perHoldingBeta,
 
         // ── VaR / CVaR (₹ loss, positive = loss) ────────────────────────────────
-        double var95Parametric,         // 1.645 × σ_p,daily × V
-        double var99Parametric,         // 2.326 × σ_p,daily × V
+        double var95Parametric,         // 1.645 × σ_p,daily × V (assumes normality)
+        double var99Parametric,         // 2.326 × σ_p,daily × V (assumes normality)
+        double var95CornishFisher,      // z adjusted for skew/kurtosis × σ_p,daily × V
+        double var99CornishFisher,
         double var95Historical,         // empirical 5th-percentile × V
         double cvar95,                  // expected shortfall beyond VaR95 × V
+
+        // ── Higher moments of daily portfolio returns ───────────────────────────
+        double returnSkewness,
+        double returnExcessKurtosis,
 
         // ── Risk contributions ───────────────────────────────────────────────────
         List<RiskContributor> riskContributors,  // sorted by percentContributionToRisk DESC

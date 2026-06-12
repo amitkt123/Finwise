@@ -105,6 +105,122 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
         return parseFundamentalsResponse(responseBody, symbol);
     }
 
+    /**
+     * Fetch quarterly financial statements from the same v10 quoteSummary call
+     * (Phase 7): income statement, balance sheet, cash flow — quarterly variants —
+     * plus the earnings module for actual quarterly EPS.
+     *
+     * Yahoo serves ~4 trailing quarters; persistence accumulates to 8+ over time.
+     */
+    public List<QuarterlySnapshot> fetchQuarterlyFundamentals(String symbol) throws PriceProviderException {
+        String yahooTicker = symbol.startsWith("^") ? symbol : symbol + ".NS";
+        String url = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/" + yahooTicker
+                + "?modules=earnings,balanceSheetHistoryQuarterly,cashflowStatementHistoryQuarterly,incomeStatementHistoryQuarterly";
+
+        String responseBody;
+        try {
+            responseBody = restClient.get()
+                    .uri(url)
+                    .retrieve()
+                    .body(String.class);
+        } catch (RestClientException e) {
+            throw new PriceProviderException("HTTP request failed for quarterly fundamentals: " + e.getMessage(), e);
+        }
+        if (responseBody == null || responseBody.isBlank()) {
+            throw new PriceProviderException("Empty quarterly quoteSummary response for " + symbol);
+        }
+        return parseQuarterlyResponse(responseBody, symbol);
+    }
+
+    /** Package-private for fixture-based testing. */
+    List<QuarterlySnapshot> parseQuarterlyResponse(String json, String symbol)
+            throws PriceProviderException {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode result = root.path("quoteSummary").path("result");
+            if (result.isEmpty() || result.get(0) == null) {
+                throw new PriceProviderException("No quarterly quoteSummary data for " + symbol);
+            }
+            JsonNode data = result.get(0);
+
+            // Merge the three statement arrays by quarter end date
+            java.util.Map<LocalDate, QuarterlySnapshot> byQuarter = new java.util.TreeMap<>();
+
+            JsonNode incomeStmts = data.path("incomeStatementHistoryQuarterly").path("incomeStatementHistory");
+            for (JsonNode stmt : incomeStmts) {
+                LocalDate end = extractEndDate(stmt);
+                if (end == null) continue;
+                QuarterlySnapshot q = byQuarter.computeIfAbsent(end, QuarterlySnapshot::new);
+                q.revenue = extractBigDecimal(stmt.path("totalRevenue"));
+                q.netIncome = extractBigDecimal(stmt.path("netIncome"));
+                q.grossProfit = extractBigDecimal(stmt.path("grossProfit"));
+            }
+
+            JsonNode balanceStmts = data.path("balanceSheetHistoryQuarterly").path("balanceSheetStatements");
+            for (JsonNode stmt : balanceStmts) {
+                LocalDate end = extractEndDate(stmt);
+                if (end == null) continue;
+                QuarterlySnapshot q = byQuarter.computeIfAbsent(end, QuarterlySnapshot::new);
+                q.totalAssets = extractBigDecimal(stmt.path("totalAssets"));
+                q.totalLiabilities = extractBigDecimal(stmt.path("totalLiab"));
+            }
+
+            JsonNode cashflowStmts = data.path("cashflowStatementHistoryQuarterly").path("cashflowStatements");
+            for (JsonNode stmt : cashflowStmts) {
+                LocalDate end = extractEndDate(stmt);
+                if (end == null) continue;
+                QuarterlySnapshot q = byQuarter.computeIfAbsent(end, QuarterlySnapshot::new);
+                q.operatingCashFlow = extractBigDecimal(stmt.path("totalCashFromOperatingActivities"));
+            }
+
+            // Quarterly actual EPS from the earnings module. Its labels ("4Q2025")
+            // don't carry exact end dates, so attach by recency: the chart's last
+            // entry pairs with the newest statement quarter, and so on backwards.
+            JsonNode epsQuarters = data.path("earnings").path("earningsChart").path("quarterly");
+            if (epsQuarters.isArray() && epsQuarters.size() > 0 && !byQuarter.isEmpty()) {
+                List<LocalDate> quarterEnds = new ArrayList<>(byQuarter.keySet()); // ascending
+                int offset = quarterEnds.size() - epsQuarters.size();
+                for (int i = 0; i < epsQuarters.size(); i++) {
+                    int target = offset + i;
+                    if (target < 0 || target >= quarterEnds.size()) continue;
+                    BigDecimal eps = extractBigDecimal(epsQuarters.get(i).path("actual"));
+                    if (eps != null) byQuarter.get(quarterEnds.get(target)).eps = eps;
+                }
+            }
+
+            return new ArrayList<>(byQuarter.values());
+        } catch (PriceProviderException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new PriceProviderException(
+                    "Failed to parse quarterly quoteSummary for " + symbol + ": " + e.getMessage(), e);
+        }
+    }
+
+    private LocalDate extractEndDate(JsonNode stmt) {
+        JsonNode endDate = stmt.path("endDate");
+        if (endDate.isMissingNode() || endDate.isNull()) return null;
+        long epoch = endDate.has("raw") ? endDate.path("raw").asLong(0) : endDate.asLong(0);
+        if (epoch <= 0) return null;
+        return Instant.ofEpochSecond(epoch).atZone(ZoneId.of("Asia/Kolkata")).toLocalDate();
+    }
+
+    /** One merged quarter of statement data. Fields are null when Yahoo omits them. */
+    public static class QuarterlySnapshot {
+        public final LocalDate quarterEnd;
+        public BigDecimal revenue;
+        public BigDecimal netIncome;
+        public BigDecimal grossProfit;
+        public BigDecimal eps;
+        public BigDecimal totalAssets;
+        public BigDecimal totalLiabilities;
+        public BigDecimal operatingCashFlow;
+
+        QuarterlySnapshot(LocalDate quarterEnd) {
+            this.quarterEnd = quarterEnd;
+        }
+    }
+
     private FundamentalsSnapshot parseFundamentalsResponse(String json, String symbol)
             throws PriceProviderException {
         try {

@@ -67,12 +67,12 @@ public class NSEIndiaPriceProvider implements PriceDataProvider {
 
     private final ObjectMapper objectMapper;
 
-    // Session cookies captured from GET nseindia.com — refreshed when expired
-    private volatile String sessionCookies = null;
-    private volatile java.time.LocalDateTime cookieExpiry = java.time.LocalDateTime.MIN;
+    // Shared NSE session bootstrap (cookies + expiry) — also used by FiiDiiFlowProvider
+    private final NseSessionManager sessionManager;
 
-    public NSEIndiaPriceProvider() {
+    public NSEIndiaPriceProvider(NseSessionManager sessionManager) {
         this.objectMapper = new ObjectMapper();
+        this.sessionManager = sessionManager;
     }
 
     @Override
@@ -83,7 +83,7 @@ public class NSEIndiaPriceProvider implements PriceDataProvider {
 
     @Override
     public List<DailyPrice> fetchHistory(String symbol, int days) throws PriceProviderException {
-        ensureValidSession();
+        String sessionCookies = sessionManager.getSessionCookies();
 
         LocalDate to   = LocalDate.now();
         LocalDate from = to.minusDays(days);
@@ -93,7 +93,7 @@ public class NSEIndiaPriceProvider implements PriceDataProvider {
                 .replace("{from}", from.format(NSE_DATE_FMT))
                 .replace("{to}",   to.format(NSE_DATE_FMT));
 
-        RestClient client = buildSessionClient();
+        RestClient client = buildSessionClient(sessionCookies);
         String responseBody;
         try {
             responseBody = client.get()
@@ -101,8 +101,8 @@ public class NSEIndiaPriceProvider implements PriceDataProvider {
                     .retrieve()
                     .body(String.class);
         } catch (RestClientException e) {
-            // Session may have expired — invalidate and retry once
-            sessionCookies = null;
+            // Session may have expired — invalidate so the next call refreshes
+            sessionManager.invalidateSession();
             throw new PriceProviderException("NSE India request failed (session may be expired): "
                     + e.getMessage(), e);
         }
@@ -110,60 +110,7 @@ public class NSEIndiaPriceProvider implements PriceDataProvider {
         return parseResponse(responseBody, symbol);
     }
 
-    /**
-     * Establishes (or renews) an NSE India session by hitting the homepage.
-     * Captures the Set-Cookie headers and caches them for 30 minutes.
-     */
-    private void ensureValidSession() throws PriceProviderException {
-        if (sessionCookies != null
-                && java.time.LocalDateTime.now().isBefore(cookieExpiry)) {
-            return;
-        }
-
-        log.debug("[NSE] Establishing new session");
-        try {
-            // We need to capture raw response headers — use java.net.http for this
-            java.net.http.HttpClient httpClient = java.net.http.HttpClient.newBuilder()
-                    .followRedirects(java.net.http.HttpClient.Redirect.NORMAL)
-                    .build();
-
-            java.net.http.HttpRequest request = java.net.http.HttpRequest.newBuilder()
-                    .uri(java.net.URI.create(NSE_HOME_URL))
-                    .header("User-Agent", BROWSER_UA)
-                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                    .GET()
-                    .build();
-
-            java.net.http.HttpResponse<String> response = httpClient.send(
-                    request, java.net.http.HttpResponse.BodyHandlers.ofString());
-
-            // Collect all Set-Cookie headers into a single Cookie header string
-            List<String> cookies = response.headers().allValues("set-cookie");
-            if (cookies.isEmpty()) {
-                throw new PriceProviderException("NSE India did not return any session cookies");
-            }
-
-            // Extract cookie name=value pairs (strip path/domain/expires attributes)
-            StringBuilder sb = new StringBuilder();
-            for (String cookie : cookies) {
-                String nameValue = cookie.split(";")[0].trim();
-                if (!sb.isEmpty()) sb.append("; ");
-                sb.append(nameValue);
-            }
-
-            sessionCookies = sb.toString();
-            cookieExpiry = java.time.LocalDateTime.now().plusMinutes(25); // NSE sessions ~30min
-            log.debug("[NSE] Session established, {} cookies captured", cookies.size());
-
-        } catch (PriceProviderException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new PriceProviderException("Failed to establish NSE India session: "
-                    + e.getMessage(), e);
-        }
-    }
-
-    private RestClient buildSessionClient() {
+    private RestClient buildSessionClient(String sessionCookies) {
         return RestClient.builder()
                 .defaultHeader("User-Agent", BROWSER_UA)
                 .defaultHeader("Accept", "application/json, text/plain, */*")

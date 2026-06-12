@@ -48,12 +48,23 @@ public record TechnicalSnapshot(
         double return20d,           // (close[T] / close[T-20]) - 1, percent
 
         // ── Trend cross state ────────────────────────────────────────────────────
-        boolean goldenCross,        // SMA50 > SMA200; NaN SMA200 → false
+        boolean goldenCross,        // STATE: SMA50 > SMA200 right now; NaN SMA200 → false
+        CrossEvent crossEvent,      // EVENT: did SMA50−SMA200 change sign on the latest bar
+        int daysSinceLastCross,     // sessions since the last 50/200 sign flip (≤120 scan); −1 = none in window
 
         // ── MACD (12,26,9) ───────────────────────────────────────────────────────
         double macd,                // EMA12 - EMA26
         double macdSignal,          // EMA9 of MACD series
         double macdHistogram,       // MACD - Signal
+
+        // ── Bollinger (20, 2σ population) ────────────────────────────────────────
+        double bollingerPctB,       // (close − lower)/(upper − lower); >1 above band, <0 below
+        double bollingerBandwidth,  // (upper − lower)/mid — squeeze/expansion gauge
+
+        // ── Volume signals ───────────────────────────────────────────────────────
+        double obv,                 // cumulative on-balance volume over the lookback window
+        double vwap20d,             // 20-day rolling VWAP on typical price (H+L+C)/3
+        double volumeRatio,         // latest volume / prior-20-session average
 
         // ── State labels ─────────────────────────────────────────────────────────
         Trend trend,
@@ -64,8 +75,9 @@ public record TechnicalSnapshot(
         int dataPoints
 
 ) {
-    public enum Trend    { UP, DOWN, SIDEWAYS }
-    public enum Momentum { OVERBOUGHT, NEUTRAL, OVERSOLD }
+    public enum Trend      { UP, DOWN, SIDEWAYS }
+    public enum Momentum   { OVERBOUGHT, NEUTRAL, OVERSOLD }
+    public enum CrossEvent { GOLDEN_TODAY, DEATH_TODAY, NONE }
 
     /** Render a labeled context block for LLM injection. */
     public String toContextBlock() {
@@ -91,9 +103,16 @@ public record TechnicalSnapshot(
             sb.append(String.format("SMA20: ₹%.2f  (price %+.1f%%)%n", sma20, pctVsSma20));
         if (!Double.isNaN(sma50))
             sb.append(String.format("SMA50: ₹%.2f  (price %+.1f%%)%n", sma50, pctVsSma50));
-        if (!Double.isNaN(sma200))
+        if (!Double.isNaN(sma200)) {
             sb.append(String.format("SMA200: ₹%.2f  (price %+.1f%%)  |  %s%n",
-                    sma200, pctVsSma200, goldenCross ? "GOLDEN CROSS (50>200)" : "DEATH CROSS (50<200)"));
+                    sma200, pctVsSma200, goldenCross ? "50>200 (bullish alignment)" : "50<200 (bearish alignment)"));
+            if (crossEvent != CrossEvent.NONE) {
+                sb.append("⚡ CROSS EVENT TODAY: ").append(crossEvent).append('\n');
+            } else if (daysSinceLastCross >= 0) {
+                sb.append(String.format("Last 50/200 cross: %d sessions ago — the alignment is a state, not a fresh signal%n",
+                        daysSinceLastCross));
+            }
+        }
 
         // ATR / volatility
         if (!Double.isNaN(atr14))

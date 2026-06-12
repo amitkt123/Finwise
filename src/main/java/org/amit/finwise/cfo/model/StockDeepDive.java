@@ -39,6 +39,12 @@ public record StockDeepDive(
         // Portfolio fit
         PortfolioFit portfolioFit,
 
+        // Explicit risk and liquidity metrics computed from price history
+        RiskMetrics riskMetrics,
+
+        // Evidence-weighted investment scorecard
+        StockScorecard scorecard,
+
         // Data completeness
         boolean knownSymbol,         // false → not in gazetteer
         boolean hasPriceHistory,     // false → no StockPriceHistory rows
@@ -67,4 +73,17 @@ public record StockDeepDive(
             String verdictLabel,            // INITIATE/AVOID/WAIT-FOR-PULLBACK/NEEDS-MORE-DATA
             String verdictRationale         // one-line explanation
     ) {}
+
+    public record RiskMetrics(
+            double maxDrawdown,             // negative number, e.g. -0.25 means -25%
+            double downsideBetaVsNifty,     // beta on benchmark-down days
+            double ewmaVolatilityAnn,       // annualized decimal volatility
+            double stressedCorrelation,     // correlation during worst benchmark-return days
+            double averageTradedValue,      // close * volume average over available history
+            int observationCount
+    ) {
+        public static RiskMetrics unavailable() {
+            return new RiskMetrics(Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN, 0);
+        }
+    }
 }

@@ -363,6 +363,20 @@ public class SymbolExtractorService {
     }
 
     /**
+     * All gazetteer symbols tagged with the given sector (case-insensitive).
+     * Used by PeerUniverseService to build the cross-sectional peer group.
+     */
+    public List<String> symbolsInSector(String sector) {
+        if (sector == null || sector.isBlank()) return List.of();
+        return symbolMap.values().stream()
+                .filter(e -> sector.equalsIgnoreCase(e.sector))
+                .map(e -> e.symbol)
+                .distinct()
+                .sorted()
+                .toList();
+    }
+
+    /**
      * Check if a specific symbol or its aliases appear in the text.
      */
     public boolean mentionsSymbol(String text, String nseSymbol) {

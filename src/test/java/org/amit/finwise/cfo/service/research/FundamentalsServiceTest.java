@@ -21,8 +21,9 @@ import static org.mockito.Mockito.when;
 /**
  * Known-answer test for the valuation z-score.
  *
- * Fixture: a 2-year P/E history of 30×15 and 30×25 → population mean 20, stdev 5.
- * Current P/E of 30 ⇒ z = (30 − 20) / 5 = 2.00 ⇒ label EXPENSIVE (z > 1).
+ * Fixture: a 2-year P/E history of 30×15 and 30×25 → mean 20,
+ * sample stdev (N−1) = √(60·25/59) ≈ 5.0422.
+ * Current P/E of 30 ⇒ z = (30 − 20) / 5.0422 ≈ 1.98 ⇒ label EXPENSIVE (z > 1).
  */
 @ExtendWith(MockitoExtension.class)
 class FundamentalsServiceTest {
@@ -38,7 +39,7 @@ class FundamentalsServiceTest {
 
     @Test
     void valuationZScore_andLabel_matchHandComputedValues() throws Exception {
-        // 60-point P/E history with mean 20, population stdev 5.
+        // 60-point P/E history with mean 20, sample (N−1) stdev ≈ 5.0422.
         List<StockFundamentals> history = new ArrayList<>();
         LocalDate base = LocalDate.now().minusDays(400);
         for (int i = 0; i < 60; i++) {
@@ -64,8 +65,8 @@ class FundamentalsServiceTest {
 
         StockFundamentals result = service.getLatest("TEST");
 
-        assertEquals(0, BigDecimal.valueOf(2.00).compareTo(result.getPeZScore()),
-                "z-score should be exactly 2.00");
+        assertEquals(0, BigDecimal.valueOf(1.98).compareTo(result.getPeZScore()),
+                "z-score should be 1.98 with the unbiased N−1 estimator");
         assertEquals("EXPENSIVE", result.getValuationLabel());
     }
 

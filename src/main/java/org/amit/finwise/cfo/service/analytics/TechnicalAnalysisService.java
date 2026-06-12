@@ -60,6 +60,7 @@ public class TechnicalAnalysisService {
         double[] closes = new double[n];
         double[] highs  = new double[n];
         double[] lows   = new double[n];
+        long[] volumes  = new long[n];
 
         for (int i = 0; i < n; i++) {
             StockPriceHistory h = sorted.get(i);
@@ -67,6 +68,7 @@ public class TechnicalAnalysisService {
             closes[i] = adj != null ? adj.doubleValue() : Double.NaN;
             highs[i]  = h.getHighPrice()  != null ? h.getHighPrice().doubleValue()  : closes[i];
             lows[i]   = h.getLowPrice()   != null ? h.getLowPrice().doubleValue()   : closes[i];
+            volumes[i] = h.getVolume() != null ? h.getVolume() : 0L;
         }
 
         LocalDate asOf     = sorted.getLast().getPriceDate();
@@ -115,8 +117,53 @@ public class TechnicalAnalysisService {
         double macdSignal   = macdResult[1];
         double macdHist     = macdResult[2];
 
-        // ── Golden/death cross ────────────────────────────────────────────────
+        // ── Golden/death cross (state and event) ───────────────────────────────
         boolean goldenCross = !Double.isNaN(sma50) && !Double.isNaN(sma200) && sma50 > sma200;
+
+        TechnicalSnapshot.CrossEvent crossEvent = TechnicalSnapshot.CrossEvent.NONE;
+        int daysSinceLastCross = -1;
+        if (!Double.isNaN(sma50) && !Double.isNaN(sma200) && n >= 2) {
+            // Check if there was a cross today vs yesterday
+            double prevSma50 = n >= 51 ? sma(closes, n - 51, 50) : Double.NaN;
+            double prevSma200 = n >= 201 ? sma(closes, n - 201, 200) : Double.NaN;
+            if (!Double.isNaN(prevSma50) && !Double.isNaN(prevSma200)) {
+                boolean wasPrevGolden = prevSma50 > prevSma200;
+                if (goldenCross != wasPrevGolden) {
+                    crossEvent = goldenCross ? TechnicalSnapshot.CrossEvent.GOLDEN_TODAY
+                                             : TechnicalSnapshot.CrossEvent.DEATH_TODAY;
+                }
+            }
+
+            // Count sessions since last cross (up to 120 session scan)
+            daysSinceLastCross = daysSinceCross(closes, 120);
+        }
+
+        // ── Bollinger Bands (20, 2σ) ──────────────────────────────────────────
+        double[] bollingerResult = n >= 20 ? bollingerBands(closes, n - 20, 20, 2.0)
+                                            : new double[]{Double.NaN, Double.NaN, Double.NaN};
+        double bollingerMid = bollingerResult[0];
+        double bollingerUpper = bollingerResult[1];
+        double bollingerLower = bollingerResult[2];
+        double bollingerPctB = Double.NaN;
+        double bollingerBandwidth = Double.NaN;
+        if (!Double.isNaN(bollingerUpper) && !Double.isNaN(bollingerLower)) {
+            double range = bollingerUpper - bollingerLower;
+            if (range > 0) {
+                bollingerPctB = (lastClose - bollingerLower) / range;
+                bollingerBandwidth = range / bollingerMid;
+            }
+        }
+
+        // ── Volume signals ────────────────────────────────────────────────────
+        double obv = n >= 1 ? obv(closes, volumes, n) : Double.NaN;
+        double vwap20d = n >= 20 ? vwap(closes, highs, lows, volumes, n - 20, 20) : Double.NaN;
+        double volumeRatio = Double.NaN;
+        if (n >= 21 && volumes[n - 1] > 0) {
+            double avgVol20 = 0;
+            for (int i = Math.max(0, n - 21); i < n - 1; i++) avgVol20 += volumes[i];
+            avgVol20 /= Math.min(20, n - 1);
+            if (avgVol20 > 0) volumeRatio = volumes[n - 1] / avgVol20;
+        }
 
         // ── State labels ──────────────────────────────────────────────────────
         TechnicalSnapshot.Momentum momentum;
@@ -152,8 +199,10 @@ public class TechnicalAnalysisService {
                 atr14, atrPct, realizedVol20dAnn,
                 high52w, low52w, pctFrom52wHigh, pctFrom52wLow,
                 returnPct(return5d), returnPct(return20d),
-                goldenCross,
+                goldenCross, crossEvent, daysSinceLastCross,
                 macdLine, macdSignal, macdHist,
+                bollingerPctB, bollingerBandwidth,
+                obv, vwap20d, volumeRatio,
                 trend, momentum,
                 hasFullHistory, n
         ));
@@ -240,18 +289,20 @@ public class TechnicalAnalysisService {
     }
 
     /**
-     * 20-day realized volatility (annualized) from log returns of closes[from..from+period].
+     * 20-day realized volatility (annualized) from simple returns of
+     * closes[from..from+period] — same return definition as ReturnSeriesService,
+     * so this figure is directly comparable with the risk engine's volatility.
      */
     private static double realizedVolAnn(double[] closes, int from, int period) {
-        double[] logRet = new double[period];
+        double[] ret = new double[period];
         for (int i = 0; i < period; i++) {
-            logRet[i] = Math.log(closes[from + i + 1] / closes[from + i]);
+            ret[i] = closes[from + i + 1] / closes[from + i] - 1.0;
         }
         double mean = 0;
-        for (double r : logRet) mean += r;
+        for (double r : ret) mean += r;
         mean /= period;
         double variance = 0;
-        for (double r : logRet) variance += (r - mean) * (r - mean);
+        for (double r : ret) variance += (r - mean) * (r - mean);
         variance /= (period - 1);
         return Math.sqrt(variance) * SQRT_252 * 100; // percent
     }
@@ -329,5 +380,78 @@ public class TechnicalAnalysisService {
     /** Convert fractional return to percent; propagates NaN. */
     private static double returnPct(double r) {
         return Double.isNaN(r) ? Double.NaN : r * 100;
+    }
+
+    /**
+     * Bollinger Bands: mid = SMA, upper = mid + 2σ, lower = mid - 2σ (population std dev).
+     * Returns {mid, upper, lower} at the specified window.
+     */
+    private static double[] bollingerBands(double[] closes, int from, int period, double stdDevs) {
+        double mid = sma(closes, from, period);
+        double variance = 0;
+        for (int i = from; i < from + period; i++) {
+            variance += (closes[i] - mid) * (closes[i] - mid);
+        }
+        variance /= period;
+        double stdDev = Math.sqrt(variance);
+        return new double[]{mid, mid + stdDevs * stdDev, mid - stdDevs * stdDev};
+    }
+
+    /**
+     * On-Balance Volume: cumulative sum where +volume on up days, -volume on down days.
+     * Computed over the full range.
+     */
+    private static double obv(double[] closes, long[] volumes, int n) {
+        double obvVal = 0;
+        for (int i = 1; i < n; i++) {
+            if (closes[i] > closes[i - 1]) {
+                obvVal += volumes[i];
+            } else if (closes[i] < closes[i - 1]) {
+                obvVal -= volumes[i];
+            }
+        }
+        return obvVal;
+    }
+
+    /**
+     * VWAP: volume-weighted average price using typical price = (H+L+C)/3.
+     * Returns the VWAP at the end of the specified window.
+     */
+    private static double vwap(double[] closes, double[] highs, double[] lows, long[] volumes,
+                                int from, int period) {
+        double numerator = 0;
+        long denominator = 0;
+        for (int i = from; i < from + period; i++) {
+            double typical = (highs[i] + lows[i] + closes[i]) / 3.0;
+            numerator += typical * volumes[i];
+            denominator += volumes[i];
+        }
+        return denominator > 0 ? numerator / denominator : Double.NaN;
+    }
+
+    /**
+     * Trading sessions since the last SMA50/SMA200 cross — 0 means the cross
+     * happened on the latest bar. Scans up to {@code maxLookback} sessions
+     * backward for the first bar whose alignment differs from today's; the
+     * cross bar is the one after it. Returns -1 if no cross is found in the
+     * window (or history is too short to compute both SMAs).
+     */
+    private static int daysSinceCross(double[] closes, int maxLookback) {
+        int n = closes.length;
+        if (n < 201) return -1;
+
+        boolean todayGolden = sma(closes, n - 50, 50) > sma(closes, n - 200, 200);
+
+        // prevIdx needs indices [prevIdx-199, prevIdx] for SMA200, so prevIdx >= 199
+        for (int daysBack = 1; daysBack <= Math.min(maxLookback, n - 200); daysBack++) {
+            int prevIdx = n - 1 - daysBack;
+            double prevSma50 = sma(closes, prevIdx - 49, 50);
+            double prevSma200 = sma(closes, prevIdx - 199, 200);
+            boolean prevGolden = prevSma50 > prevSma200;
+            if (prevGolden != todayGolden) {
+                return daysBack - 1; // cross occurred on the bar after prevIdx
+            }
+        }
+        return -1;
     }
 }

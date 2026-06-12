@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.service.research;
 import org.amit.finwise.cfo.model.StockDeepDive;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
+import org.amit.finwise.cfo.repository.StockScorecardSnapshotRepository;
 import org.amit.finwise.cfo.service.analytics.CovarianceEngine;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.ReturnSeriesService;
@@ -41,6 +42,10 @@ class StockIntelligenceServiceGoldenTest {
     @Mock SymbolExtractorService symbolExtractorService;
     @Mock FundamentalsService fundamentalsService;
     @Mock MacroStateService macroStateService;
+    @Mock StockScorecardService stockScorecardService;
+    @Mock StockScorecardSnapshotRepository scorecardSnapshotRepo;
+    @Mock PeerUniverseService peerUniverseService;
+    @Mock org.amit.finwise.cfo.config.RiskProperties riskProperties;
 
     @InjectMocks
     StockIntelligenceService service;

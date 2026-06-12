@@ -2,6 +2,8 @@ package org.amit.finwise.investment.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.model.RiskDecomposition;
+import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.investment.enums.InvestmentType;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
@@ -21,6 +23,8 @@ public class InvestmentService {
 
     private final InvestmentRepository investmentRepository;
     private final PortfolioRepository portfolioRepository;
+    private final PortfolioRiskService portfolioRiskService;
+    private final CapitalGainsTaxService capitalGainsTaxService;
 
     @Transactional
     public Investment addInvestment(String userId, InvestmentType type, String symbol,
@@ -67,9 +71,15 @@ public class InvestmentService {
         analysis.totalHoldings = active.size();
         analysis.assetAllocation = calculateAssetAllocation(active);
         analysis.sectorAllocation = calculateSectorAllocation(active);
-        analysis.diversificationScore = calculateDiversificationScore(analysis);
+        analysis.diversificationScore = calculateDiversificationScore(userId, analysis);
         analysis.topPerformers = getTopPerformers(active, 5);
         analysis.underperformers = getUnderperformers(active, 5);
+
+        // Tax-adjusted view: pre-tax P&L overstates wealth, esp. for STCG holdings
+        CapitalGainsTaxService.TaxEstimate tax = capitalGainsTaxService.estimate(active);
+        analysis.estimatedTaxIfSoldToday = tax.totalTaxIfSoldToday();
+        analysis.netGainsAfterTax = analysis.unrealizedGains.subtract(tax.totalTaxIfSoldToday());
+        analysis.taxBreakdown = tax;
         return analysis;
     }
 
@@ -105,7 +115,27 @@ public class InvestmentService {
         return result;
     }
 
-    private Integer calculateDiversificationScore(PortfolioAnalysis analysis) {
+    /**
+     * Correlation-aware diversification score from the risk engine's ENB and HHI
+     * (ten perfectly correlated stocks score poorly here, unlike count-based
+     * heuristics). Falls back to the legacy count heuristic when there isn't
+     * enough price history to compute a covariance matrix.
+     */
+    private Integer calculateDiversificationScore(String userId, PortfolioAnalysis analysis) {
+        try {
+            Optional<RiskDecomposition> rd = portfolioRiskService.compute(userId);
+            if (rd.isPresent() && !rd.get().isLowConfidence()) {
+                double enb = rd.get().effectiveNumberOfBets();
+                double sectorHHI = rd.get().sectorHHI();
+                // ENB of 8+ independent bets ≈ fully diversified for a retail portfolio
+                double enbScore = Math.min(1.0, enb / 8.0) * 70;
+                // sectorHHI 1.0 (single sector) → 0; 0.125 (8 equal sectors) → full marks
+                double sectorScore = Math.min(1.0, (1.0 - sectorHHI) / 0.875) * 30;
+                return (int) Math.round(Math.min(100, enbScore + sectorScore));
+            }
+        } catch (Exception e) {
+            log.debug("Risk-engine diversification unavailable, using heuristic: {}", e.getMessage());
+        }
         int score = Math.min(30, analysis.totalHoldings * 3);
         score += Math.min(35, analysis.assetAllocation.size() * 10);
         boolean concentrated = analysis.assetAllocation.values().stream()
@@ -131,15 +161,52 @@ public class InvestmentService {
                 .limit(limit).toList();
     }
 
+    /** Drift beyond which an asset class triggers a rebalance. */
+    private static final BigDecimal REBALANCE_TRIGGER_PCT = BigDecimal.valueOf(5);
+    /** Once triggered, rebalance back to within this band of target (not exactly to target) to cut churn. */
+    private static final BigDecimal REBALANCE_BAND_PCT = BigDecimal.valueOf(2);
+
+    /**
+     * Tolerance-band rebalancing with concrete ₹ actions. An asset class is
+     * actionable only when its drift exceeds {@link #REBALANCE_TRIGGER_PCT};
+     * the suggested trade brings it back to target ± {@link #REBALANCE_BAND_PCT},
+     * not exactly to target, to avoid churning on noise. Sell actions carry the
+     * portfolio-level capital-gains estimate as a cost warning.
+     */
     public RebalancingRecommendation getRebalancingRecommendation(String userId, Map<String, BigDecimal> targetAllocation) {
         PortfolioAnalysis analysis = getPortfolioAnalysis(userId);
         RebalancingRecommendation rec = new RebalancingRecommendation();
         rec.currentAllocation = analysis.assetAllocation;
         rec.targetAllocation = targetAllocation;
-        rec.rebalancingNeeded = targetAllocation.entrySet().stream().anyMatch(e -> {
+        rec.actions = new ArrayList<>();
+
+        BigDecimal totalValue = analysis.currentValue != null ? analysis.currentValue : BigDecimal.ZERO;
+        for (Map.Entry<String, BigDecimal> e : targetAllocation.entrySet()) {
             BigDecimal current = analysis.assetAllocation.getOrDefault(e.getKey(), BigDecimal.ZERO);
-            return e.getValue().subtract(current).abs().compareTo(BigDecimal.valueOf(5)) > 0;
-        });
+            BigDecimal drift = current.subtract(e.getValue()); // positive = overweight
+            if (drift.abs().compareTo(REBALANCE_TRIGGER_PCT) <= 0) continue;
+
+            // Trade back to the edge of the band nearest current, not all the way to target
+            BigDecimal correction = drift.abs().subtract(REBALANCE_BAND_PCT);
+            BigDecimal amount = totalValue.multiply(correction)
+                    .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+
+            RebalancingAction action = new RebalancingAction();
+            action.assetClass = e.getKey();
+            action.currentPercent = current;
+            action.targetPercent = e.getValue();
+            action.driftPercent = drift;
+            action.action = drift.signum() > 0 ? "SELL" : "BUY";
+            action.amount = amount;
+            if (drift.signum() > 0) {
+                action.costNote = "Selling may trigger capital gains tax (portfolio-wide estimate if fully "
+                        + "liquidated: ₹" + analysis.estimatedTaxIfSoldToday
+                        + ") plus STT/brokerage. Prefer directing fresh inflows to underweight classes first.";
+            }
+            rec.actions.add(action);
+        }
+
+        rec.rebalancingNeeded = !rec.actions.isEmpty();
         rec.lastRebalanceDate = LocalDate.now();
         rec.nextRecommendedDate = LocalDate.now().plusMonths(6);
         return rec;
@@ -156,6 +223,9 @@ public class InvestmentService {
         public Integer diversificationScore;
         public List<InvestmentPerformance> topPerformers;
         public List<InvestmentPerformance> underperformers;
+        public BigDecimal estimatedTaxIfSoldToday;   // STCG + LTCG on unrealized gains
+        public BigDecimal netGainsAfterTax;          // unrealizedGains − estimated tax
+        public CapitalGainsTaxService.TaxEstimate taxBreakdown;
     }
 
     public static class InvestmentPerformance {
@@ -173,7 +243,18 @@ public class InvestmentService {
         public Map<String, BigDecimal> currentAllocation;
         public Map<String, BigDecimal> targetAllocation;
         public Boolean rebalancingNeeded;
+        public List<RebalancingAction> actions;
         public LocalDate lastRebalanceDate;
         public LocalDate nextRecommendedDate;
+    }
+
+    public static class RebalancingAction {
+        public String assetClass;
+        public BigDecimal currentPercent;
+        public BigDecimal targetPercent;
+        public BigDecimal driftPercent;   // positive = overweight
+        public String action;             // BUY | SELL
+        public BigDecimal amount;         // ₹ to trade (to target ± band)
+        public String costNote;           // tax/cost warning for sells
     }
 }

@@ -17,6 +17,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -31,6 +33,8 @@ public class CFOScheduler {
     private final StockPriceService stockPriceService;
     private final MarketContextService marketContextService;
     private final MacroStateService macroStateService;
+    private final org.amit.finwise.cfo.service.research.PeerUniverseService peerUniverseService;
+    private final org.amit.finwise.cfo.config.FactorProperties factorProperties;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -141,12 +145,28 @@ public class CFOScheduler {
             log.error("[CFO] Stock price fetch failed: {}", e.getMessage());
         }
 
-        // Fetch Nifty 50 benchmark — UPSERT semantics, only new dates are saved
+        // Fetch Nifty 50 benchmark — UPSERT semantics, only new dates are saved.
+        // 730 days so benchmark TWRR covers the full performance lookback window.
         try {
-            int saved = stockPriceService.fetchAndPersistBenchmark(365);
+            int saved = stockPriceService.fetchAndPersistBenchmark(730);
             log.info("[CFO] Nifty 50 benchmark fetch complete: {} new records", saved);
         } catch (Exception e) {
             log.error("[CFO] Nifty 50 benchmark fetch failed: {}", e.getMessage());
+        }
+
+        // Factor-model index universe (Phase 8) — sector/style indices for the
+        // multi-factor risk model. Missing tickers are dropped silently; the
+        // model degrades to the factors that have data.
+        try {
+            List<String> factorIndices = factorProperties.getIndices().stream()
+                    .filter(idx -> !StockPriceService.NIFTY_SYMBOL.equals(idx))
+                    .toList();
+            int saved = stockPriceService.fetchAndPersistIndices(
+                    factorIndices, factorProperties.getLookbackDays());
+            log.info("[CFO] Factor index fetch complete ({} indices): {} new records",
+                    factorIndices.size(), saved);
+        } catch (Exception e) {
+            log.error("[CFO] Factor index fetch failed: {}", e.getMessage());
         }
     }
 
@@ -217,6 +237,37 @@ public class CFOScheduler {
                     snapshot.getIndiaVix());
         } catch (Exception e) {
             log.error("[CFO] Macro state refresh failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 7:00 PM IST weekdays — pull FII/DII institutional flows from NSE.
+     * NSE publishes fiidiiTradeReact data post-market (~18:30); this updates
+     * today's macro snapshot in place and recomputes the 5-day FII cumulative.
+     */
+    @Scheduled(cron = "0 0 19 * * MON-FRI", zone = "Asia/Kolkata")
+    public void fetchInstitutionalFlows() {
+        log.info("[CFO] Fetching FII/DII institutional flows...");
+        try {
+            macroStateService.updateFlows();
+        } catch (Exception e) {
+            log.error("[CFO] FII/DII flow update failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Weekly: Every Sunday 10 AM IST — refresh the peer-valuation universe.
+     * Walks every gazetteer peer of the user's held sectors through the
+     * daily-cached fundamentals fetch (rate-limited), then recomputes the
+     * cross-sectional P/E and P/B percentiles.
+     */
+    @Scheduled(cron = "0 0 10 * * SUN", zone = "Asia/Kolkata")
+    public void weeklyPeerUniverseRefresh() {
+        log.info("[CFO] Refreshing peer valuation universe...");
+        try {
+            peerUniverseService.refreshForUser(defaultUserId);
+        } catch (Exception e) {
+            log.error("[CFO] Peer universe refresh failed: {}", e.getMessage());
         }
     }
 

@@ -384,8 +384,7 @@ public class StockPriceService {
 
     /**
      * Fetches and persists Nifty 50 (^NSEI) daily price history for use as a benchmark
-     * in beta and tracking-error computation. Fetches up to {@code days} calendar days
-     * and uses the same UPSERT semantics as fetchAndPersistSymbol (skips existing dates).
+     * in beta and tracking-error computation.
      *
      * Called daily by CFOScheduler alongside the regular price fetch.
      *
@@ -394,19 +393,34 @@ public class StockPriceService {
      */
     @Transactional
     public int fetchAndPersistBenchmark(int days) {
-        log.info("[PriceService] Fetching benchmark {} ({} days)", NIFTY_SYMBOL, days);
+        return fetchAndPersistIndex(NIFTY_SYMBOL, days);
+    }
+
+    /**
+     * Fetches and persists daily price history for any index ticker (factor-model
+     * sector/style indices, benchmark). Fetches up to {@code days} calendar days
+     * and uses the same UPSERT semantics as fetchAndPersistSymbol (skips existing dates).
+     *
+     * Returns 0 on any provider failure — style indices are unreliable on Yahoo, and
+     * the factor model degrades to the indices that have data, so a missing ticker
+     * is logged, never thrown.
+     *
+     * @return number of new rows saved
+     */
+    @Transactional
+    public int fetchAndPersistIndex(String indexSymbol, int days) {
+        log.info("[PriceService] Fetching index {} ({} days)", indexSymbol, days);
         try {
-            // Temporarily override historyDays for this call
-            List<DailyPrice> prices = fetchWithFallbackOverride(NIFTY_SYMBOL, days);
+            List<DailyPrice> prices = fetchWithFallbackOverride(indexSymbol, days);
             if (prices.isEmpty()) {
-                log.warn("[PriceService] No data returned for benchmark {}", NIFTY_SYMBOL);
+                log.warn("[PriceService] No data returned for index {}", indexSymbol);
                 return 0;
             }
 
             int saved = 0;
             for (int i = 0; i < prices.size(); i++) {
                 DailyPrice dp = prices.get(i);
-                if (priceRepo.existsBySymbolAndPriceDate(NIFTY_SYMBOL, dp.date())) continue;
+                if (priceRepo.existsBySymbolAndPriceDate(indexSymbol, dp.date())) continue;
 
                 Double changePercent = null;
                 if (i > 0 && prices.get(i - 1).close() != null && dp.close() != null) {
@@ -420,7 +434,7 @@ public class StockPriceService {
                 }
 
                 StockPriceHistory record = StockPriceHistory.builder()
-                        .symbol(NIFTY_SYMBOL)
+                        .symbol(indexSymbol)
                         .priceDate(dp.date())
                         .openPrice(dp.open())
                         .highPrice(dp.high())
@@ -436,13 +450,33 @@ public class StockPriceService {
                 saved++;
             }
 
-            log.info("[PriceService] Benchmark {}: {} new records saved", NIFTY_SYMBOL, saved);
+            log.info("[PriceService] Index {}: {} new records saved", indexSymbol, saved);
             return saved;
 
         } catch (PriceProviderException e) {
-            log.error("[PriceService] Failed to fetch benchmark {}: {}", NIFTY_SYMBOL, e.getMessage());
+            log.error("[PriceService] Failed to fetch index {}: {}", indexSymbol, e.getMessage());
             return 0;
         }
+    }
+
+    /**
+     * Fetches a list of index tickers with the usual inter-symbol courtesy delay.
+     * Used by the 16:00 job for the factor-model index universe.
+     *
+     * @return total new rows saved across all indices
+     */
+    public int fetchAndPersistIndices(List<String> indexSymbols, int days) {
+        int total = 0;
+        for (String index : indexSymbols) {
+            total += fetchAndPersistIndex(index, days);
+            if (interSymbolDelayMs > 0) {
+                try { Thread.sleep(interSymbolDelayMs); } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return total;
     }
 
     /**
@@ -467,6 +501,59 @@ public class StockPriceService {
     }
 
     // ── Utility methods used by other services ────────────────────────────────
+
+    /**
+     * Adjusted close on the nearest trading day at-or-before {@code onOrBefore}
+     * (within 10 calendar days). Used by CapitalGainsTaxService for the
+     * 31-Jan-2018 grandfathering FMV.
+     *
+     * DB-first; on a miss, performs a one-shot provider fetch reaching back to
+     * the target date and persists only the bracket rows, so subsequent calls
+     * are served from the database. Returns empty on any failure — callers must
+     * degrade gracefully (e.g. skip the cost step-up with a note).
+     */
+    public Optional<BigDecimal> closeOn(String symbol, LocalDate onOrBefore) {
+        LocalDate bracketStart = onOrBefore.minusDays(10);
+
+        Optional<StockPriceHistory> stored = priceRepo
+                .findFirstBySymbolAndPriceDateLessThanEqualOrderByPriceDateDesc(symbol, onOrBefore);
+        if (stored.isPresent() && !stored.get().getPriceDate().isBefore(bracketStart)) {
+            StockPriceHistory row = stored.get();
+            return Optional.ofNullable(row.getAdjustedClose() != null
+                    ? row.getAdjustedClose() : row.getClosePrice());
+        }
+
+        try {
+            int days = (int) java.time.temporal.ChronoUnit.DAYS.between(bracketStart, LocalDate.now()) + 1;
+            List<DailyPrice> prices = fetchWithFallbackOverride(symbol, days);
+            DailyPrice best = null;
+            for (DailyPrice dp : prices) {
+                if (dp.date() == null || dp.date().isAfter(onOrBefore) || dp.date().isBefore(bracketStart)) {
+                    continue;
+                }
+                if (best == null || dp.date().isAfter(best.date())) best = dp;
+                if (!priceRepo.existsBySymbolAndPriceDate(symbol, dp.date())) {
+                    priceRepo.save(StockPriceHistory.builder()
+                            .symbol(symbol)
+                            .priceDate(dp.date())
+                            .openPrice(dp.open())
+                            .highPrice(dp.high())
+                            .lowPrice(dp.low())
+                            .closePrice(dp.close())
+                            .adjustedClose(dp.adjClose())
+                            .volume(dp.volume())
+                            .dataQualityFlag(DataQualityFlag.OK)
+                            .build());
+                }
+            }
+            if (best != null) {
+                return Optional.ofNullable(best.adjClose() != null ? best.adjClose() : best.close());
+            }
+        } catch (Exception e) {
+            log.warn("[PriceService] closeOn({}, {}) failed: {}", symbol, onOrBefore, e.getMessage());
+        }
+        return Optional.empty();
+    }
 
     /**
      * Returns the consecutive circuit count for the most recent trading day.

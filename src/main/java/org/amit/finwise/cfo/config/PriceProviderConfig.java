@@ -53,7 +53,8 @@ public class PriceProviderConfig {
      * Providers with missing API keys are excluded automatically.
      */
     @Bean
-    public List<PriceDataProvider> priceDataProviders(YahooFinancePriceProvider yahooFinancePriceProvider) {
+    public List<PriceDataProvider> priceDataProviders(YahooFinancePriceProvider yahooFinancePriceProvider,
+                                                      org.amit.finwise.cfo.service.price.NseSessionManager nseSessionManager) {
         List<String> order = new ArrayList<>();
         order.add(primaryProvider.trim().toLowerCase());
         for (String fb : fallbackProviders.split(",")) {
@@ -65,7 +66,7 @@ public class PriceProviderConfig {
 
         List<PriceDataProvider> providers = new ArrayList<>();
         for (String name : order) {
-            PriceDataProvider p = buildProvider(name, yahooFinancePriceProvider);
+            PriceDataProvider p = buildProvider(name, yahooFinancePriceProvider, nseSessionManager);
             if (p != null) providers.add(p);
         }
 
@@ -77,7 +78,8 @@ public class PriceProviderConfig {
         return providers;
     }
 
-    private PriceDataProvider buildProvider(String name, YahooFinancePriceProvider yahooFinancePriceProvider) {
+    private PriceDataProvider buildProvider(String name, YahooFinancePriceProvider yahooFinancePriceProvider,
+                                            org.amit.finwise.cfo.service.price.NseSessionManager nseSessionManager) {
         return switch (name) {
             case "yahoo-finance", "yahoo" ->
                     yahooFinancePriceProvider;
@@ -90,7 +92,7 @@ public class PriceProviderConfig {
             }
 
             case "nse-india", "nse" ->
-                    new NSEIndiaPriceProvider();
+                    new NSEIndiaPriceProvider(nseSessionManager);
 
             default -> {
                 // Unknown provider name — log and skip

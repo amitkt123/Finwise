@@ -1,20 +1,26 @@
 package org.amit.finwise.cfo.service.research;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.model.DataQualityFlag;
 import org.amit.finwise.cfo.model.NewsArticle;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.model.StockDeepDive;
 import org.amit.finwise.cfo.model.StockPriceHistory;
+import org.amit.finwise.cfo.model.StockScorecardSnapshot;
 import org.amit.finwise.cfo.model.TechnicalSnapshot;
+import org.amit.finwise.cfo.config.RiskProperties;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
+import org.amit.finwise.cfo.repository.StockScorecardSnapshotRepository;
 import org.amit.finwise.cfo.service.analytics.CovarianceEngine;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.ReturnSeriesService;
 import org.amit.finwise.cfo.service.analytics.TechnicalAnalysisService;
 import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
 import org.amit.finwise.cfo.model.MacroSnapshot;
+import org.amit.finwise.cfo.model.StockScorecard;
 import org.amit.finwise.cfo.service.macro.MacroStateService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
@@ -53,15 +59,21 @@ public class StockIntelligenceService {
     private final StockPriceHistoryRepository priceRepo;
     private final NewsArticleRepository newsRepo;
     private final InvestmentRepository investmentRepo;
+    private final RiskProperties riskProperties;
     private final TechnicalAnalysisService technicalAnalysisService;
     private final PortfolioRiskService portfolioRiskService;
     private final ReturnSeriesService returnSeriesService;
     private final CovarianceEngine covarianceEngine;
     private final SymbolExtractorService symbolExtractorService;
     private final FundamentalsService fundamentalsService;
+    private final FundamentalTrendService fundamentalTrendService;
+    private final PeerUniverseService peerUniverseService;
     private final MacroStateService macroStateService;
+    private final StockScorecardService stockScorecardService;
+    private final StockScorecardSnapshotRepository scorecardSnapshotRepo;
 
     private static final int NEWS_LOOKBACK_DAYS = 7;
+    private static final ObjectMapper SCORECARD_MAPPER = new ObjectMapper().findAndRegisterModules();
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -110,12 +122,24 @@ public class StockIntelligenceService {
         org.amit.finwise.cfo.model.StockFundamentals fundamentals = null;
         try {
             fundamentals = fundamentalsService.getLatest(sym);
+            if (fundamentals != null && fundamentals.getPeerPePercentile() == null) {
+                // Cross-sectional rank from already-persisted peer snapshots (no network)
+                fundamentals = peerUniverseService.applyPercentiles(fundamentals);
+            }
             if (fundamentals != null && fundamentals.getDataQualityNotes() != null) {
                 dataGaps.add("DATA_INCOMPLETE:FUNDAMENTALS — " + fundamentals.getDataQualityNotes());
             }
         } catch (Exception e) {
             log.warn("[DeepDive] Fundamentals fetch failed for {}: {}", sym, e.getMessage());
             dataGaps.add("DATA_INCOMPLETE:FUNDAMENTALS — fetch error");
+        }
+
+        // ── Quarterly fundamental trend (Phase 7) ─────────────────────────────
+        FundamentalTrendService.TrendAnalysis quarterlyTrend = null;
+        try {
+            quarterlyTrend = fundamentalTrendService.analyzeTrend(sym, LocalDate.now()).orElse(null);
+        } catch (Exception e) {
+            log.warn("[DeepDive] Quarterly trend analysis failed for {}: {}", sym, e.getMessage());
         }
 
         // ── Stock-specific news ───────────────────────────────────────────────
@@ -142,6 +166,16 @@ public class StockIntelligenceService {
 
         // ── Portfolio fit ─────────────────────────────────────────────────────
         StockDeepDive.PortfolioFit fit = buildPortfolioFit(sym, userId, dataGaps, technicals, fundamentals);
+        StockDeepDive.RiskMetrics riskMetrics = buildRiskMetrics(sym, dataGaps);
+        PriceCoverage priceCoverage = priceCoverage(sym);
+        if (priceCoverage.suspectGapCount() > 0) {
+            dataGaps.add("DATA_QUALITY:corporate-action/anomaly — "
+                    + priceCoverage.suspectGapCount() + " suspect price gap(s) excluded from returns");
+        }
+        StockScorecard scorecard = stockScorecardService.build(
+                sym, LocalDate.now(), technicals, fundamentals, quarterlyTrend, stockNews, macroSnapshot, fit,
+                riskMetrics, dataGaps, priceCoverage.observations(), priceCoverage.hasAdjustedPrices());
+        persistScorecardSnapshot(scorecard);
 
         return new StockDeepDive(
                 sym,
@@ -155,6 +189,8 @@ public class StockIntelligenceService {
                 stockNews,
                 macroSnapshot,
                 fit,
+                riskMetrics,
+                scorecard,
                 knownSymbol,
                 hasPriceHistory,
                 dataGaps
@@ -162,6 +198,59 @@ public class StockIntelligenceService {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+
+    private StockDeepDive.RiskMetrics buildRiskMetrics(String sym, List<String> dataGaps) {
+        try {
+            LocalDate since = LocalDate.now().minusDays(420);
+            List<StockPriceHistory> history = priceRepo.findRecentBySymbol(sym, since);
+            if (history == null || history.isEmpty()) {
+                dataGaps.add("DATA_INCOMPLETE:RISK_METRICS — no price history for drawdown/liquidity");
+                return StockDeepDive.RiskMetrics.unavailable();
+            }
+
+            NavigableMap<LocalDate, Double> closePrices = new TreeMap<>();
+            NavigableMap<LocalDate, Long> volumes = new TreeMap<>();
+            for (StockPriceHistory row : history) {
+                java.math.BigDecimal close = row.getAdjustedClose() != null
+                        ? row.getAdjustedClose() : row.getClosePrice();
+                if (row.getPriceDate() != null && close != null && close.signum() > 0) {
+                    closePrices.put(row.getPriceDate(), close.doubleValue());
+                }
+                if (row.getPriceDate() != null && row.getVolume() != null && row.getVolume() > 0) {
+                    volumes.put(row.getPriceDate(), row.getVolume());
+                }
+            }
+
+            Map<String, NavigableMap<LocalDate, Double>> returns =
+                    returnSeriesService.getReturnSeries(
+                            List.of(sym, org.amit.finwise.cfo.service.StockPriceService.NIFTY_SYMBOL), since);
+            NavigableMap<LocalDate, Double> stockReturns = returns != null ? returns.get(sym) : null;
+            NavigableMap<LocalDate, Double> niftyReturns = returns != null
+                    ? returns.get(org.amit.finwise.cfo.service.StockPriceService.NIFTY_SYMBOL) : null;
+
+            double maxDrawdown = covarianceEngine.maxDrawdown(closePrices);
+            double averageTradedValue = covarianceEngine.averageTradedValue(closePrices, volumes);
+            double ewmaVol = stockReturns != null
+                    ? covarianceEngine.ewmaVolatilityAnnualized(stockReturns, riskProperties.getEwmaLambdaEquity())
+                    : Double.NaN;
+            double downsideBeta = stockReturns != null && niftyReturns != null
+                    ? covarianceEngine.downsideBetaStats(stockReturns, niftyReturns).beta() : Double.NaN;
+            double stressedCorrelation = stockReturns != null && niftyReturns != null
+                    ? covarianceEngine.stressedCorrelation(stockReturns, niftyReturns, 0.20) : Double.NaN;
+
+            if (Double.isNaN(ewmaVol)) dataGaps.add("DATA_INCOMPLETE:RISK_METRICS — EWMA volatility unavailable");
+            if (Double.isNaN(downsideBeta)) dataGaps.add("DATA_INCOMPLETE:RISK_METRICS — downside beta unavailable");
+            if (Double.isNaN(stressedCorrelation)) dataGaps.add("DATA_INCOMPLETE:RISK_METRICS — stressed correlation unavailable");
+            if (Double.isNaN(averageTradedValue)) dataGaps.add("DATA_INCOMPLETE:LIQUIDITY — traded-value proxy unavailable");
+
+            return new StockDeepDive.RiskMetrics(maxDrawdown, downsideBeta, ewmaVol,
+                    stressedCorrelation, averageTradedValue, closePrices.size());
+        } catch (Exception e) {
+            log.warn("[DeepDive] Risk metric computation failed for {}: {}", sym, e.getMessage());
+            dataGaps.add("DATA_INCOMPLETE:RISK_METRICS — computation error");
+            return StockDeepDive.RiskMetrics.unavailable();
+        }
+    }
 
     private StockDeepDive.PortfolioFit buildPortfolioFit(String sym, String userId,
                                                           List<String> dataGaps,
@@ -263,9 +352,12 @@ public class StockIntelligenceService {
                 }
             }
 
-            // Compute marginal impact
+            // Compute marginal impact at the user's typical position size — a fixed
+            // 5% probe is meaningless for a 4-stock portfolio. Capped at 25% so a
+            // 1-2 holding portfolio still gets an interpretable marginal figure.
             if (!existingWeights.isEmpty()) {
-                marginalImpact = covarianceEngine.marginalVolImpact(returnSeries, existingWeights, sym, 0.05);
+                double probeWeight = Math.min(0.25, Math.max(0.02, 1.0 / existingWeights.size()));
+                marginalImpact = covarianceEngine.marginalVolImpact(returnSeries, existingWeights, sym, probeWeight);
             } else {
                 dataGaps.add("DATA_INCOMPLETE:MARGINAL_VOL — portfolio has no other equity holdings");
             }
@@ -427,4 +519,38 @@ public class StockIntelligenceService {
             sb.append(" | Sector: ").append(sector);
         return sb.toString();
     }
+
+    private PriceCoverage priceCoverage(String sym) {
+        try {
+            List<StockPriceHistory> history = priceRepo.findRecentBySymbol(sym, LocalDate.now().minusDays(420));
+            boolean hasAdjusted = history.stream().anyMatch(h -> h.getAdjustedClose() != null);
+            int suspectGapCount = (int) history.stream()
+                    .filter(h -> DataQualityFlag.SUSPECT_GAP.equals(h.getDataQualityFlag()))
+                    .count();
+            return new PriceCoverage(history.size(), hasAdjusted, suspectGapCount);
+        } catch (Exception e) {
+            log.warn("[DeepDive] Price coverage check failed for {}: {}", sym, e.getMessage());
+            return new PriceCoverage(0, false, 0);
+        }
+    }
+
+    private void persistScorecardSnapshot(StockScorecard scorecard) {
+        if (scorecard == null) return;
+        try {
+            scorecardSnapshotRepo.save(StockScorecardSnapshot.builder()
+                    .symbol(scorecard.symbol())
+                    .scorecardDate(scorecard.asOf())
+                    .totalScore(scorecard.totalScore())
+                    .recommendation(scorecard.recommendation())
+                    .confidence(scorecard.confidence())
+                    .expectedReturnBand(scorecard.expectedReturnBand())
+                    .scorecardJson(SCORECARD_MAPPER.writeValueAsString(scorecard))
+                    .build());
+        } catch (Exception e) {
+            log.warn("[DeepDive] Scorecard snapshot persistence failed for {}: {}",
+                    scorecard.symbol(), e.getMessage());
+        }
+    }
+
+    private record PriceCoverage(int observations, boolean hasAdjustedPrices, int suspectGapCount) {}
 }

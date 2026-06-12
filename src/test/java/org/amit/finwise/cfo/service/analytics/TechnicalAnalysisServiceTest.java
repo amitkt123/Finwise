@@ -119,4 +119,114 @@ class TechnicalAnalysisServiceTest {
         Optional<TechnicalSnapshot> snap = service.analyze("TEST");
         assertTrue(snap.isEmpty(), "fewer than 15 data points must yield no snapshot");
     }
+
+    // ── Phase 5a goldens ─────────────────────────────────────────────────────
+
+    /**
+     * Bollinger(20, 2σ population) on closes 1..20:
+     *   mid = 10.5; Σ(x−10.5)² = 665 → popVar = 33.25, σ = √33.25
+     *   upper = 10.5 + 2σ, lower = 10.5 − 2σ, range = 4σ
+     *   %B = (20 − lower)/range = (9.5 + 2σ)/(4σ); bandwidth = 4σ/10.5
+     */
+    @Test
+    void bollinger_matchesHandComputedLinearRamp() {
+        double[] closes = new double[20];
+        for (int i = 0; i < 20; i++) closes[i] = i + 1;
+
+        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+                .thenReturn(closesOnly(closes));
+
+        TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
+
+        double sigma = Math.sqrt(33.25);
+        assertEquals((9.5 + 2 * sigma) / (4 * sigma), snap.bollingerPctB(), 1e-12, "%B");
+        assertEquals(4 * sigma / 10.5, snap.bollingerBandwidth(), 1e-12, "bandwidth");
+    }
+
+    /**
+     * Canonical OBV worked example (Wikipedia): cumulative OBV ends at 72,100.
+     * Ten flat warm-up bars (equal closes contribute zero) pad the series past
+     * the 15-observation minimum without disturbing the sum.
+     */
+    @Test
+    void obv_matchesCanonicalWorkedExample() {
+        double[] exampleCloses = {10, 10.15, 10.17, 10.13, 10.11, 10.15, 10.20, 10.20, 10.22, 10.21};
+        long[] exampleVolumes = {25200, 30000, 25600, 32000, 23000, 40000, 36000, 20500, 23000, 27500};
+
+        List<StockPriceHistory> rows = new ArrayList<>();
+        LocalDate start = LocalDate.of(2024, 1, 1);
+        for (int i = 0; i < 10; i++) {          // flat warm-up: close 10, any volume
+            rows.add(bar(start.plusDays(i), 10, 99999));
+        }
+        for (int i = 0; i < 10; i++) {
+            rows.add(bar(start.plusDays(10 + i), exampleCloses[i], exampleVolumes[i]));
+        }
+        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
+
+        TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
+        assertEquals(72100.0, snap.obv(), 1e-9, "OBV canonical example final value");
+    }
+
+    /**
+     * Engineered last-bar golden cross: 200 bars at 100 (SMA50 == SMA200, not
+     * golden), then one bar at 110 → SMA50 = 100.2 > SMA200 = 100.05.
+     * The flip happens on the latest bar: GOLDEN_TODAY, 0 sessions since.
+     */
+    @Test
+    void crossEvent_firesOnEngineeredLastBarGoldenCross() {
+        double[] closes = new double[201];
+        for (int i = 0; i < 200; i++) closes[i] = 100;
+        closes[200] = 110;
+
+        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+                .thenReturn(closesOnly(closes));
+
+        TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
+        assertTrue(snap.goldenCross(), "SMA50 must sit above SMA200 after the jump");
+        assertEquals(TechnicalSnapshot.CrossEvent.GOLDEN_TODAY, snap.crossEvent());
+        assertEquals(0, snap.daysSinceLastCross(), "cross on the latest bar = 0 sessions ago");
+    }
+
+    /** Same series one bar later: the cross is a day old — state, not event. */
+    @Test
+    void crossEvent_isNoneDayAfterCross_withDaysSinceTracking() {
+        double[] closes = new double[202];
+        for (int i = 0; i < 200; i++) closes[i] = 100;
+        closes[200] = 110;
+        closes[201] = 110;
+
+        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+                .thenReturn(closesOnly(closes));
+
+        TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
+        assertTrue(snap.goldenCross());
+        assertEquals(TechnicalSnapshot.CrossEvent.NONE, snap.crossEvent());
+        assertEquals(1, snap.daysSinceLastCross(), "cross happened one session ago");
+    }
+
+    /** volumeRatio = today's volume / average of the prior 20 sessions. */
+    @Test
+    void volumeRatio_isTodayVolumeOverPrior20Average() {
+        List<StockPriceHistory> rows = new ArrayList<>();
+        LocalDate start = LocalDate.of(2024, 1, 1);
+        for (int i = 0; i < 20; i++) rows.add(bar(start.plusDays(i), 100 + i, 1000));
+        rows.add(bar(start.plusDays(20), 121, 1500));
+
+        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
+
+        TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
+        assertEquals(1.5, snap.volumeRatio(), 1e-12, "1500 vs flat 1000 average");
+    }
+
+    private StockPriceHistory bar(LocalDate date, double close, long volume) {
+        return StockPriceHistory.builder()
+                .symbol("TEST")
+                .priceDate(date)
+                .adjustedClose(BigDecimal.valueOf(close))
+                .closePrice(BigDecimal.valueOf(close))
+                .highPrice(BigDecimal.valueOf(close))
+                .lowPrice(BigDecimal.valueOf(close))
+                .volume(volume)
+                .build();
+    }
 }

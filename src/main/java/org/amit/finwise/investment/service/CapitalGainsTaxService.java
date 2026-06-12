@@ -1,0 +1,282 @@
+package org.amit.finwise.investment.service;
+
+import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.service.StockPriceService;
+import org.amit.finwise.investment.enums.InvestmentType;
+import org.amit.finwise.investment.model.Investment;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.regex.Pattern;
+
+/**
+ * Estimates Indian capital gains tax — both on unrealized equity gains (so P&L
+ * can be shown net of tax) and on realized gains within a financial year (with
+ * statutory loss netting).
+ *
+ * Equity / equity-oriented funds (Sec 111A / 112A, post-Budget-2024 regime):
+ *   - STCG (held ≤ 1 year): flat rate on gains (default 20%)
+ *   - LTCG (held > 1 year): rate on gains above an annual exemption
+ *     (default 12.5% above ₹1.25 lakh), exemption applied portfolio-wide
+ *   - §55(2)(ac) grandfathering: equity bought on/before 31-Jan-2018 steps the
+ *     cost up to max(actual cost, min(FMV on 31-Jan-2018, sale price)). FMV is
+ *     proxied by the adjusted close on the nearest trading day — adjusted (not
+ *     raw) so it is comparable with broker-reported post-split average prices.
+ *
+ * Debt mutual funds purchased after 1-Apr-2023 are taxed at the investor's slab
+ * rate regardless of holding period; fund category is inferred from the scheme
+ * name (a note flags the assumption).
+ *
+ * Realized-gain netting (set-off rules): STCL offsets STCG first then LTCG;
+ * LTCL offsets LTCG only. Unabsorbed losses carry forward up to 8 assessment
+ * years (reported informationally — prior-year carry-ins are outside this
+ * system's view).
+ *
+ * Unrealized losses are NOT netted in {@link #estimate} — that estimate stays a
+ * conservative upper bound on tax if everything were sold today.
+ */
+@Slf4j
+@Service
+public class CapitalGainsTaxService {
+
+    private final StockPriceService stockPriceService;
+    private final LotTrackingService lotTrackingService;
+    private final double stcgRate;
+    private final double ltcgRate;
+    private final double ltcgExemption;
+    private final double slabRate;
+    private final LocalDate grandfatheringDate;
+
+    private static final Pattern DEBT_FUND_NAME = Pattern.compile(
+            "debt|liquid|gilt|g-sec|bond|overnight|money market|ultra short|low duration|"
+            + "short duration|medium duration|long duration|corporate bond|credit risk|"
+            + "banking (&|and) psu|floater|floating rate|treasury|fmp|fixed maturity",
+            Pattern.CASE_INSENSITIVE);
+
+    public CapitalGainsTaxService(
+            StockPriceService stockPriceService,
+            LotTrackingService lotTrackingService,
+            @Value("${cfo.tax.stcg-rate:0.20}") double stcgRate,
+            @Value("${cfo.tax.ltcg-rate:0.125}") double ltcgRate,
+            @Value("${cfo.tax.ltcg-exemption:125000}") double ltcgExemption,
+            @Value("${cfo.tax.slab-rate:0.30}") double slabRate,
+            @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate) {
+        this.stockPriceService = stockPriceService;
+        this.lotTrackingService = lotTrackingService;
+        this.stcgRate = stcgRate;
+        this.ltcgRate = ltcgRate;
+        this.ltcgExemption = ltcgExemption;
+        this.slabRate = slabRate;
+        this.grandfatheringDate = LocalDate.parse(grandfatheringDate);
+    }
+
+    // ── Unrealized estimate ──────────────────────────────────────────────────
+
+    public TaxEstimate estimate(List<Investment> activeInvestments) {
+        List<HoldingTax> holdings = new ArrayList<>();
+        List<String> exclusions = new ArrayList<>();
+        List<String> notes = new ArrayList<>();
+        double stcgGains = 0;
+        double ltcgGains = 0;
+        double slabGains = 0;
+
+        for (Investment inv : activeInvestments) {
+            if (inv.getUnrealizedGainLoss() == null) continue;
+            String label = inv.getSymbol() != null ? inv.getSymbol() : String.valueOf(inv.getType());
+
+            Regime regime = regimeOf(inv, notes);
+            if (regime == Regime.EXCLUDED) {
+                exclusions.add(label);
+                continue;
+            }
+            if (inv.getPurchaseDate() == null) {
+                exclusions.add(label + " (no purchase date)");
+                continue;
+            }
+
+            boolean longTerm = inv.getPurchaseDate().isBefore(LocalDate.now().minusYears(1));
+            double gain = grandfatheredGain(inv, notes);
+
+            if (gain > 0) {
+                switch (regime) {
+                    case EQUITY -> { if (longTerm) ltcgGains += gain; else stcgGains += gain; }
+                    case SLAB   -> slabGains += gain;
+                    default -> { }
+                }
+            }
+            holdings.add(new HoldingTax(
+                    inv.getSymbol(), inv.getPurchaseDate(),
+                    regime == Regime.SLAB ? "SLAB" : (longTerm ? "LTCG" : "STCG"),
+                    inv.getUnrealizedGainLoss()));
+        }
+
+        double stcgTax = stcgGains * stcgRate;
+        double ltcgTax = Math.max(0, ltcgGains - ltcgExemption) * ltcgRate;
+        double slabTax = slabGains * slabRate;
+        double totalTax = stcgTax + ltcgTax + slabTax;
+
+        return new TaxEstimate(
+                rupees(stcgGains), rupees(ltcgGains),
+                rupees(stcgTax), rupees(ltcgTax), rupees(totalTax),
+                List.copyOf(holdings), List.copyOf(exclusions),
+                rupees(slabGains), rupees(slabTax), List.copyOf(notes));
+    }
+
+    /**
+     * Gain with the §55(2)(ac) cost step-up where applicable; falls back to the
+     * broker-reported unrealized gain when FMV or per-unit figures are missing.
+     */
+    private double grandfatheredGain(Investment inv, List<String> notes) {
+        double rawGain = inv.getUnrealizedGainLoss().doubleValue();
+        if (inv.getPurchaseDate().isAfter(grandfatheringDate)) return rawGain;
+        if (inv.getSymbol() == null || inv.getQuantity() == null
+                || inv.getCostPerUnit() == null || inv.getCurrentPrice() == null) {
+            notes.add("GRANDFATHERING_SKIPPED: " + (inv.getSymbol() != null ? inv.getSymbol() : inv.getName())
+                    + " — pre-2018 holding but per-unit figures missing; raw gain used (tax may be overstated)");
+            return rawGain;
+        }
+
+        Optional<BigDecimal> fmvOpt = stockPriceService.closeOn(inv.getSymbol().toUpperCase(), grandfatheringDate);
+        if (fmvOpt.isEmpty()) {
+            notes.add("GRANDFATHERING_SKIPPED: " + inv.getSymbol()
+                    + " — FMV on " + grandfatheringDate + " unavailable; raw gain used (tax may be overstated)");
+            return rawGain;
+        }
+
+        double fmv = fmvOpt.get().doubleValue();
+        double cost = inv.getCostPerUnit().doubleValue();
+        double current = inv.getCurrentPrice().doubleValue();
+        double steppedUpCost = Math.max(cost, Math.min(fmv, current));
+        if (steppedUpCost > cost) {
+            notes.add(String.format("GRANDFATHERED: %s cost stepped up ₹%.2f → ₹%.2f using 31-Jan-2018 FMV ₹%.2f (§55(2)(ac))",
+                    inv.getSymbol(), cost, steppedUpCost, fmv));
+        }
+        return (current - steppedUpCost) * inv.getQuantity().doubleValue();
+    }
+
+    // ── Realized gains with statutory netting ────────────────────────────────
+
+    /**
+     * Realized capital gains for the financial year containing {@code asOf},
+     * from the FIFO lot ledger, with intra-/inter-head loss set-off applied.
+     * Covers symbol-bearing (equity) transactions only.
+     */
+    public RealizedTaxSummary realizedTax(String userId, LocalDate asOf) {
+        LocalDate fyStart = asOf.getMonthValue() >= 4
+                ? LocalDate.of(asOf.getYear(), 4, 1)
+                : LocalDate.of(asOf.getYear() - 1, 4, 1);
+        LocalDate fyEnd = fyStart.plusYears(1).minusDays(1);
+
+        LotTrackingService.LotLedger ledger = lotTrackingService.buildLedger(userId);
+        List<String> notes = new ArrayList<>(ledger.notes());
+
+        double st = 0;
+        double lt = 0;
+        for (LotTrackingService.RealizedGain g : ledger.realizedGains()) {
+            if (g.sellDate().isBefore(fyStart) || g.sellDate().isAfter(fyEnd)) continue;
+            if (g.longTerm()) lt += g.gain(); else st += g.gain();
+        }
+
+        // Set-off: STCL against STCG happens implicitly in the aggregate; the
+        // remaining STCL then offsets LTCG. LTCL offsets LTCG only.
+        double netSt = st;
+        double netLt = lt;
+        if (netSt < 0 && netLt > 0) {
+            double offset = Math.min(-netSt, netLt);
+            netLt -= offset;
+            netSt += offset;
+        }
+        double carryForwardStcl = netSt < 0 ? -netSt : 0;
+        double carryForwardLtcl = netLt < 0 ? -netLt : 0;
+        if (carryForwardStcl > 0 || carryForwardLtcl > 0) {
+            notes.add(String.format(
+                    "CARRY_FORWARD: unabsorbed losses (STCL ₹%.0f, LTCL ₹%.0f) can be carried forward up to 8 assessment years if the return is filed on time",
+                    carryForwardStcl, carryForwardLtcl));
+        }
+
+        double taxableStcg = Math.max(0, netSt);
+        double positiveLtcg = Math.max(0, netLt);
+        double exemptionUsed = Math.min(positiveLtcg, ltcgExemption);
+        double taxableLtcg = Math.max(0, positiveLtcg - ltcgExemption);
+
+        return new RealizedTaxSummary(
+                fyStart, fyEnd,
+                rupees(st), rupees(lt),
+                rupees(taxableStcg), rupees(taxableLtcg),
+                rupees(taxableStcg * stcgRate), rupees(taxableLtcg * ltcgRate),
+                rupees(exemptionUsed), rupees(Math.max(0, ltcgExemption - positiveLtcg)),
+                rupees(carryForwardStcl), rupees(carryForwardLtcl),
+                List.copyOf(notes));
+    }
+
+    // ── Regime classification ────────────────────────────────────────────────
+
+    private enum Regime { EQUITY, SLAB, EXCLUDED }
+
+    private Regime regimeOf(Investment inv, List<String> notes) {
+        InvestmentType type = inv.getType();
+        if (type == InvestmentType.STOCK || type == InvestmentType.ETF) return Regime.EQUITY;
+        if (type != InvestmentType.MUTUAL_FUND) return Regime.EXCLUDED;
+
+        String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
+        if (DEBT_FUND_NAME.matcher(name).find()) {
+            notes.add("MF_CLASSIFIED_DEBT: " + inv.getName()
+                    + " — taxed at slab rate (post-Apr-2023 debt MF rule); name-based classification");
+            return Regime.SLAB;
+        }
+        notes.add("MF_ASSUMED_EQUITY: " + inv.getName()
+                + " — equity-oriented (≥65% equity) assumed from scheme name");
+        return Regime.EQUITY;
+    }
+
+    double stcgRate()      { return stcgRate; }
+    double ltcgRate()      { return ltcgRate; }
+    double ltcgExemption() { return ltcgExemption; }
+
+    private BigDecimal rupees(double v) {
+        return BigDecimal.valueOf(v).setScale(2, RoundingMode.HALF_UP);
+    }
+
+    public record TaxEstimate(
+            BigDecimal stcgGains,            // unrealized gains in STCG bucket
+            BigDecimal ltcgGains,            // unrealized gains in LTCG bucket (post-grandfathering)
+            BigDecimal stcgTaxIfSoldToday,
+            BigDecimal ltcgTaxIfSoldToday,   // after annual exemption
+            BigDecimal totalTaxIfSoldToday,
+            List<HoldingTax> holdings,
+            List<String> exclusions,         // assets outside equity/slab regimes
+            BigDecimal slabGains,            // debt-MF gains taxed at slab rate
+            BigDecimal slabTaxIfSoldToday,
+            List<String> notes               // GRANDFATHERED / MF_CLASSIFIED_* disclosures
+    ) {}
+
+    public record HoldingTax(
+            String symbol,
+            LocalDate purchaseDate,
+            String bucket,                   // STCG | LTCG | SLAB
+            BigDecimal unrealizedGainLoss
+    ) {}
+
+    public record RealizedTaxSummary(
+            LocalDate fyStart,
+            LocalDate fyEnd,
+            BigDecimal realizedStcg,         // pre-netting aggregate (may be negative)
+            BigDecimal realizedLtcg,         // pre-netting aggregate (may be negative)
+            BigDecimal taxableStcg,
+            BigDecimal taxableLtcg,          // after netting and exemption
+            BigDecimal stcgTax,
+            BigDecimal ltcgTax,
+            BigDecimal exemptionUsed,
+            BigDecimal exemptionHeadroom,    // ₹ of LTCG still realizable tax-free this FY
+            BigDecimal carryForwardStcl,
+            BigDecimal carryForwardLtcl,
+            List<String> notes
+    ) {}
+}

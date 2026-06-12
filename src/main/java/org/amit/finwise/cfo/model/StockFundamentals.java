@@ -124,6 +124,63 @@ public class StockFundamentals {
     @Column(length = 20)
     private String valuationLabel;
 
+    // ── Peer valuation inputs ────────────────────────────────────────────
+
+    /** Normalized peer group key from a paid/provider feed, when available. */
+    @Column(length = 80)
+    private String peerGroup;
+
+    /** P/E percentile inside normalized peer group. Lower is cheaper. */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal peerPePercentile;
+
+    /** P/B percentile inside normalized peer group. Lower is cheaper. */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal peerPbPercentile;
+
+    // ── Bank/NBFC asset-quality metrics ──────────────────────────────────
+
+    /** Net interest margin (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal netInterestMargin;
+
+    /** Gross non-performing assets (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal grossNpa;
+
+    /** Net non-performing assets (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal netNpa;
+
+    /** CASA ratio (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal casaRatio;
+
+    /** Credit cost (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal creditCost;
+
+    /** Provision coverage ratio (%) */
+    @Column(precision = 8, scale = 2)
+    private BigDecimal provisionCoverageRatio;
+
+    // ── Piotroski (modified) ─────────────────────────────────────────────
+
+    /**
+     * Modified Piotroski F-Score: checks passed out of {@link #piotroskiMaxChecks}.
+     * Computed from available fundamentals (profitability, FCF, YoY ROE / leverage /
+     * gross-margin trends, revenue growth); full 9-point version needs balance-sheet
+     * history not yet ingested. Null when too few checks are computable.
+     */
+    private Integer piotroskiFScore;
+
+    /** Number of F-Score checks that were computable for this snapshot (max 6 in v1). */
+    private Integer piotroskiMaxChecks;
+
+    /** Per-check breakdown, e.g. "PROFITABLE+ FCF+ ROE_TREND- LEVERAGE+ GMARGIN+ REVGROWTH+" */
+    @Column(length = 300)
+    private String piotroskiDetail;
+
     // ── Data quality ────────────────────────────────────────────────────
 
     /** Flags missing critical fields (e.g. INCOMPLETE:MARGINS, INCOMPLETE:EARNINGS) */

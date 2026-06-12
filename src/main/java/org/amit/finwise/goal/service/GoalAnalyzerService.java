@@ -26,7 +26,8 @@ public class GoalAnalyzerService {
                                     FinancialGoal.GoalType type, BigDecimal targetAmount,
                                     LocalDate targetDate, FinancialGoal.GoalPriority priority) {
         long months = Math.max(1, ChronoUnit.MONTHS.between(LocalDate.now(), targetDate));
-        BigDecimal requiredMonthly = targetAmount.divide(BigDecimal.valueOf(months), 2, RoundingMode.HALF_UP);
+        BigDecimal requiredMonthly = requiredMonthlyContribution(
+                targetAmount, BigDecimal.ZERO, null, months);
         FinancialGoal goal = FinancialGoal.builder()
                 .userId(userId).name(name).description(description).type(type)
                 .targetAmount(targetAmount).currentAmount(BigDecimal.ZERO)
@@ -54,13 +55,34 @@ public class GoalAnalyzerService {
     public FinancialGoal.GoalStatus evaluateGoalStatus(FinancialGoal goal) {
         long totalMonths = Math.max(1, ChronoUnit.MONTHS.between(goal.getStartDate(), goal.getTargetDate()));
         long elapsed = Math.max(0, ChronoUnit.MONTHS.between(goal.getStartDate(), LocalDate.now()));
-        BigDecimal expected = BigDecimal.valueOf(elapsed).divide(BigDecimal.valueOf(totalMonths), 4, RoundingMode.HALF_UP)
-                .multiply(BigDecimal.valueOf(100));
+        BigDecimal expected = BigDecimal.valueOf(
+                expectedProgressPct(elapsed, totalMonths, goal.getExpectedAnnualReturn()));
         BigDecimal variance = goal.getProgressPercentage().subtract(expected);
         if (goal.getProgressPercentage().compareTo(BigDecimal.valueOf(100)) >= 0) return FinancialGoal.GoalStatus.ACHIEVED;
         if (variance.compareTo(BigDecimal.valueOf(-10)) < 0) return FinancialGoal.GoalStatus.OFF_TRACK;
         if (variance.compareTo(BigDecimal.valueOf(-5)) < 0) return FinancialGoal.GoalStatus.AT_RISK;
         return FinancialGoal.GoalStatus.ON_TRACK;
+    }
+
+    /**
+     * Expected progress (%) after {@code elapsed} of {@code totalMonths} months.
+     *
+     * An SIP-funded corpus accumulates as an annuity, ((1+i)^m − 1)/i — convex,
+     * not linear: compounding does most of its work late. A linear expectation
+     * overstates how far behind a goal is in its early months and understates
+     * it near the end. The annuity-accumulation ratio
+     *
+     *   E_m / E_M = ((1+i)^m − 1) / ((1+i)^M − 1)
+     *
+     * needs no SIP amount and degenerates to m/M as i → 0.
+     */
+    static double expectedProgressPct(long elapsed, long totalMonths, BigDecimal expectedAnnualReturnPct) {
+        if (totalMonths <= 0) return 100.0;
+        if (expectedAnnualReturnPct == null || expectedAnnualReturnPct.compareTo(BigDecimal.ZERO) <= 0) {
+            return 100.0 * elapsed / totalMonths;
+        }
+        double i = Math.pow(1.0 + expectedAnnualReturnPct.doubleValue() / 100.0, 1.0 / 12.0) - 1.0;
+        return 100.0 * (Math.pow(1.0 + i, elapsed) - 1.0) / (Math.pow(1.0 + i, totalMonths) - 1.0);
     }
 
     public GoalAnalysis analyzeGoal(Long goalId) {
@@ -81,12 +103,46 @@ public class GoalAnalyzerService {
             analysis.inflationAdjustedTarget = goal.getTargetAmount();
         }
         if (analysis.monthsRemaining > 0) {
-            analysis.requiredMonthlySavings = analysis.amountNeeded
-                    .divide(BigDecimal.valueOf(analysis.monthsRemaining), 2, RoundingMode.HALF_UP);
+            analysis.requiredMonthlySavings = requiredMonthlyContribution(
+                    analysis.inflationAdjustedTarget, goal.getCurrentAmount(),
+                    goal.getExpectedAnnualReturn(), analysis.monthsRemaining);
         }
         analysis.status = goal.getStatus();
         analysis.recommendations = generateRecommendations(goal, analysis);
         return analysis;
+    }
+
+    /**
+     * Monthly contribution required to reach {@code futureTarget} in {@code months},
+     * assuming contributions earn {@code expectedAnnualReturnPct} (e.g. 12 = 12% p.a.)
+     * and the existing corpus compounds at the same rate:
+     *
+     *   PMT = (FV − corpus×(1+r)^n) × r / ((1+r)^n − 1)
+     *
+     * Falls back to linear FV/N when no return assumption is set — correct only
+     * for zero-yield savings, but the safest default.
+     */
+    static BigDecimal requiredMonthlyContribution(BigDecimal futureTarget,
+                                                  BigDecimal currentCorpus,
+                                                  BigDecimal expectedAnnualReturnPct,
+                                                  long months) {
+        if (months <= 0) return futureTarget.subtract(currentCorpus).max(BigDecimal.ZERO);
+        if (currentCorpus == null) currentCorpus = BigDecimal.ZERO;
+
+        if (expectedAnnualReturnPct == null
+                || expectedAnnualReturnPct.compareTo(BigDecimal.ZERO) <= 0) {
+            return futureTarget.subtract(currentCorpus).max(BigDecimal.ZERO)
+                    .divide(BigDecimal.valueOf(months), 2, RoundingMode.HALF_UP);
+        }
+
+        double r = expectedAnnualReturnPct.doubleValue() / 100.0 / 12.0; // monthly rate
+        double growthFactor = Math.pow(1.0 + r, months);
+        double corpusFV = currentCorpus.doubleValue() * growthFactor;
+        double gap = futureTarget.doubleValue() - corpusFV;
+        if (gap <= 0) return BigDecimal.ZERO; // corpus alone compounds past the target
+
+        double pmt = gap * r / (growthFactor - 1.0);
+        return BigDecimal.valueOf(pmt).setScale(2, RoundingMode.HALF_UP);
     }
 
     private List<String> generateRecommendations(FinancialGoal goal, GoalAnalysis analysis) {
