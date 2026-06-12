@@ -9,15 +9,23 @@ import org.amit.finwise.cfo.service.GrowwAuthService;
 import org.amit.finwise.cfo.service.InvestorBehaviorService;
 import org.amit.finwise.cfo.service.PersonalizedRelevanceScorer;
 import org.amit.finwise.cfo.service.StockPriceService;
+import org.amit.finwise.cfo.service.analytics.AttributionService;
+import org.amit.finwise.cfo.service.analytics.LookThroughService;
 import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
+import org.amit.finwise.cfo.service.ingestion.MfPortfolioImportService;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -39,6 +47,9 @@ public class CFOController {
     private final RiskQuestionnaireRepository riskQuestionnaireRepository;
     private final StockPriceService stockPriceService;
     private final InvestmentRepository investmentRepository;
+    private final MfPortfolioImportService mfPortfolioImportService;
+    private final LookThroughService lookThroughService;
+    private final AttributionService attributionService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -156,6 +167,46 @@ public class CFOController {
             String platform
     ) {}
 
+
+    // ── Mutual-Fund Look-Through & Attribution (Phase 12) ────────────────────────
+
+    /**
+     * POST /api/cfo/mf-portfolio/import
+     * Import a mutual-fund portfolio disclosure CSV (manual, per the AMFI no-API contract).
+     * Columns: schemeCode,asOf,isin,symbol,weightPct,sector (header optional).
+     */
+    @PostMapping(value = "/mf-portfolio/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<MfPortfolioImportService.ImportSummary> importMfPortfolio(
+            @RequestParam("file") MultipartFile file) {
+        try {
+            String csv = new String(file.getBytes(), StandardCharsets.UTF_8);
+            return ResponseEntity.ok(mfPortfolioImportService.importCsv(csv));
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read MF portfolio CSV", e);
+        }
+    }
+
+    /**
+     * GET /api/cfo/look-through
+     * Effective per-stock/per-sector exposure after exploding mutual funds into constituents.
+     */
+    @GetMapping("/look-through")
+    public ResponseEntity<LookThroughResult> getLookThrough() {
+        return lookThroughService.compute(defaultUserId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * GET /api/cfo/attribution
+     * Brinson-Fachler attribution of portfolio excess return over Nifty (monthly, linked).
+     */
+    @GetMapping("/attribution")
+    public ResponseEntity<AttributionReport> getAttribution() {
+        return attributionService.compute(defaultUserId)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
 
     // ── News ──────────────────────────────────────────────────────────────────
 

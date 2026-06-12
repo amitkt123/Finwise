@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.config.RiskProperties;
 import org.amit.finwise.cfo.model.RiskDecomposition;
+import org.amit.finwise.cfo.model.VolForecast;
 import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
@@ -14,6 +15,7 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -38,6 +40,7 @@ public class PortfolioRiskService {
     private final CovarianceEngine covarianceEngine;
     private final InvestmentRepository investmentRepository;
     private final RiskProperties riskProperties;
+    private final GarchService garchService;
 
     private static final double SQRT_252 = Math.sqrt(252.0);
     private static final double ANNUAL_DAYS = 252.0;
@@ -365,6 +368,134 @@ public class PortfolioRiskService {
                 sharpe, sortino, trackingError,
                 headline
         ));
+    }
+
+    /**
+     * Forward-looking volatility forecast for the portfolio (Phase 9a).
+     *
+     * Builds the value-weighted daily return series — exactly as {@link #compute} does
+     * for its historical VaR — and runs a single GARCH(1,1) fit on it (one fit per call,
+     * not per holding). Returns empty when the portfolio lacks enough aligned history.
+     */
+    public Optional<VolForecast> forwardRisk(String userId) {
+        double[] portfolioReturns = portfolioReturnSeries(userId);
+        if (portfolioReturns == null || portfolioReturns.length < 2) return Optional.empty();
+        return Optional.of(garchService.fit(portfolioReturns));
+    }
+
+    /**
+     * Value-weighted daily portfolio returns over the lookback window, on the common
+     * trading days of all sufficiently-historied equity holdings. Null when fewer than
+     * two holdings have enough history to align.
+     */
+    double[] portfolioReturnSeries(String userId) {
+        PortfolioSeries s = portfolioSeries(userId);
+        return s == null ? null : s.returns();
+    }
+
+    /** Aligned value-weighted daily portfolio return series with its trading dates. */
+    private record PortfolioSeries(List<LocalDate> dates, double[] returns) {}
+
+    /**
+     * Shared builder for the value-weighted daily portfolio return series. Captures
+     * the aligned trading dates so consumers can re-bucket returns (e.g. monthly).
+     */
+    private PortfolioSeries portfolioSeries(String userId) {
+        List<Investment> equities = investmentRepository.findActiveInvestments(userId).stream()
+                .filter(inv -> inv.getSymbol() != null && !inv.getSymbol().isBlank())
+                .filter(inv -> inv.getCurrentValue() != null
+                        && inv.getCurrentValue().compareTo(BigDecimal.ZERO) > 0)
+                .toList();
+        if (equities.isEmpty()) return null;
+
+        BigDecimal totalValue = equities.stream()
+                .map(Investment::getCurrentValue).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (totalValue.compareTo(BigDecimal.ZERO) == 0) return null;
+
+        Map<String, Double> rawWeights = new LinkedHashMap<>();
+        for (Investment inv : equities) {
+            rawWeights.merge(inv.getSymbol().toUpperCase(),
+                    inv.getCurrentValue().doubleValue() / totalValue.doubleValue(), Double::sum);
+        }
+
+        LocalDate since = LocalDate.now().minusDays(riskProperties.getLookbackDays());
+        Map<String, NavigableMap<LocalDate, Double>> stockReturns =
+                returnSeriesService.getReturnSeries(new ArrayList<>(rawWeights.keySet()), since);
+
+        CovarianceEngine.AlignedSeries aligned =
+                covarianceEngine.align(stockReturns, ReturnSeriesService.MIN_OBSERVATIONS);
+        if (aligned == null) return null;
+
+        int n = aligned.symbols().size();
+        // Re-normalize to the aligned (included) holdings.
+        double[] w = new double[n];
+        double included = 0;
+        for (int i = 0; i < n; i++) {
+            w[i] = rawWeights.getOrDefault(aligned.symbols().get(i), 0.0);
+            included += w[i];
+        }
+        if (included <= 0) return null;
+        for (int i = 0; i < n; i++) w[i] /= included;
+
+        List<LocalDate> dates = aligned.dates();
+        int T = dates.size();
+        double[] portfolioReturns = new double[T];
+        for (int t = 0; t < T; t++) {
+            for (int i = 0; i < n; i++) {
+                portfolioReturns[t] += w[i] * aligned.data()[t][i];
+            }
+        }
+        return new PortfolioSeries(dates, portfolioReturns);
+    }
+
+    /**
+     * Annualized geometric drift (μ) and volatility (σ) of the value-weighted
+     * portfolio, estimated from daily returns over the lookback window. Annualized
+     * exactly as {@link #compute} does its return/vol figures — geometric μ and
+     * σ×√252. Empty when fewer than MIN_OBSERVATIONS aligned trading days exist;
+     * callers fall back to a planning assumption in that case.
+     */
+    public Optional<DriftVol> estimateDriftVol(String userId) {
+        PortfolioSeries s = portfolioSeries(userId);
+        if (s == null || s.returns().length < ReturnSeriesService.MIN_OBSERVATIONS) {
+            return Optional.empty();
+        }
+        double[] r = s.returns();
+        double meanDaily = StatUtils.mean(r);
+        double mu = Math.pow(1.0 + meanDaily, ANNUAL_DAYS) - 1.0;
+        double sigma = Math.sqrt(StatUtils.variance(r)) * SQRT_252;
+        return Optional.of(new DriftVol(mu, sigma, r.length));
+    }
+
+    /** Annualized drift/volatility estimate with the observation count it rests on. */
+    public record DriftVol(double annualDrift, double annualVolatility, int observations) {}
+
+    /**
+     * Calendar-month compounded portfolio returns (∏(1+r_daily) − 1 within each
+     * month) derived from the daily series. The first and last months are dropped
+     * as almost certainly partial — the lookback window opens and closes mid-month —
+     * which would otherwise bias a bootstrap resample toward short months. Empty
+     * when the daily series is unavailable.
+     */
+    public Optional<double[]> monthlyPortfolioReturns(String userId) {
+        PortfolioSeries s = portfolioSeries(userId);
+        if (s == null) return Optional.empty();
+
+        List<LocalDate> dates = s.dates();
+        double[] r = s.returns();
+        Map<YearMonth, Double> growth = new LinkedHashMap<>();
+        for (int t = 0; t < r.length; t++) {
+            growth.merge(YearMonth.from(dates.get(t)), 1.0 + r[t], (a, b) -> a * b);
+        }
+        if (growth.size() <= 2) return Optional.of(new double[0]);
+
+        List<YearMonth> months = new ArrayList<>(growth.keySet());
+        // Drop the leading and trailing (partial) months.
+        double[] monthly = new double[months.size() - 2];
+        for (int i = 1; i < months.size() - 1; i++) {
+            monthly[i - 1] = growth.get(months.get(i)) - 1.0;
+        }
+        return Optional.of(monthly);
     }
 
     /**

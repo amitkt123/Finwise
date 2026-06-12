@@ -1,0 +1,450 @@
+Finwise → Bloomberg-Parity (Indian Context): 12-Phase Roadmap
+
+Context
+
+A deep peer review of the post-remediation codebase (2026-06-11) graded each module and found:
+(a) verified statistical-correctness bugs — NaN beta defaults to 0.0 not 1.0
+(PortfolioRiskService.java:160-163), no covariance shrinkage (commons-math3 3.6.1 has no
+Ledoit-Wolf class — must hand-implement), Cornish-Fisher guard is NaN-only (:329-335),
+realizedVolAnn uses log returns while the risk stack uses simple returns, golden cross is a
+state not an event, excluded-symbol weight silently re-normalized;
+(b) dead capabilities — StockFundamentals.peerPe/PbPercentile never populated,
+MacroSnapshot.fiiNetFlow/diiNetFlow fields exist but unfed;
+(c) material tax errors — no pre-31-Jan-2018 LTCG grandfathering, debt MFs taxed under
+equity regime;
+(d) absent Bloomberg-parity capabilities — multi-factor risk model, GARCH, liquidity-adjusted
+VaR, options/IV, yield curve, Monte Carlo goals, MF look-through, Brinson attribution.
+
+User decision: full roadmap, phase-by-phase, each phase shippable with green tests; all
+unofficial data feeds included behind circuit breakers. Free data only (Yahoo, NSE, NSDL,
+RBI/FBIL, AMFI). Keep the LLM-narrates/Java-computes separation.
+
+Conventions: base package org.amit.finwise; analytics in cfo/service/analytics/, research in
+cfo/service/research/, macro in cfo/service/macro/; config cfo.* keys; tests = JUnit+Mockito
+with hand-computed golden values (./mvnw -o test; surefire argLine for JDK 25 already set).
+Record-evolution rule: exactly ONE RiskDecomposition constructor break (Phase 1); all later
+analytics are sibling records (FactorRiskReport, VolForecast, LiquidityReport, ...) aggregated
+in CFOAdvisorService.
+
+Dependency graph
+
+P1 fixes -> P2 Ledoit-Wolf -> P8 factor model -> P12b Brinson
+P1 -> P9 GARCH + liquidity VaR
+P3 tax (independent after P1)
+P4a peers -> P5b/c scorecard ; P4b benchmark TWRR -> P12b
+P6a NseSessionManager -> P10 option chain
+P4c goal compounding -> P11 Monte Carlo
+P7 quarterly fundamentals -> scorecard growth pillar
+
+---
+
+Phase 1 — Statistical correctness fixes (S)
+
+All in cfo/service/analytics/ unless noted.
+
+- 1a. NaN beta -> 1.0 — PortfolioRiskService.java:160-163: unknown-history beta defaults to
+  market prior 1.0, not 0.0; emit per-holding betaImputed data-quality note.
+  Test: short-history symbol -> portfolio beta uses 1.0 + note.
+
+- 1b. Simple returns in realizedVolAnn — TechnicalAnalysisService.java:245-248: replace
+  Math.log(P_t/P_{t-1}) with P_t/P_{t-1} - 1; recompute golden value in
+  TechnicalAnalysisServiceTest.
+
+- 1c. Cornish-Fisher validity guard — cornishFisherZ: if |skew| > 2.5 || exKurt > 10
+  (or z_CF non-monotone between 1% and 5%), fall back to parametric VaR + note "CF outside
+  validity domain". Extend CornishFisherTest (skew=4, exKurt=15 -> fallback).
+
+- 1d. Interpolated historical VaR — replace floor(0.05*T)-1 index
+  (PortfolioRiskService.java:210-214) with R-7 quantile:
+  h = (T-1)p + 1; q = x_floor(h) + (h-floor(h))(x_{floor(h)+1} - x_floor(h))
+  (or commons-math3 Percentile). Same cutoff for CVaR. Hand-computed 20-point test.
+
+- 1e. ONE RiskDecomposition constructor break — add double excludedWeightPct (computed BEFORE
+  re-normalization; >0.25 forces isLowConfidence), List<String> dataQualityNotes,
+  Double shrinkageIntensity (null until P2). Update all construction sites + tests +
+  CFOAdvisorService (~line 1142) + InvestmentService.
+
+- 1f. Adaptive marginal-vol probe — callers of CovarianceEngine.marginalVolImpact pass
+  max(0.02, 1.0/n) instead of hardcoded 0.05.
+
+- 1g. EWMA lambda config + seed fix — new cfo/config/RiskProperties.java
+  (@ConfigurationProperties("cfo.risk")): ewma-lambda.equity=0.94, ewma-lambda.index=0.97,
+  plus existing risk-free-rate/lookback-days. Fix EWMA seed: variance of first ~20 obs, not
+  full-sample (look-ahead leak). Recompute CovarianceEngineTest goldens.
+
+Status: DONE (2026-06-11)
+
+---
+
+Phase 2 — Ledoit-Wolf covariance shrinkage (M)
+
+New: cfo/service/analytics/LedoitWolfShrinkage.java — LW 2003 constant-correlation target
+(preferred over identity: all-equity portfolio has nonzero mean correlation).
+On demeaned returns x_it (use 1/T convention internally, consistently):
+
+  1. r_bar = (2/(N(N-1))) sum_{i<j} s_ij/sqrt(s_ii * s_jj)
+  2. Target F: f_ii = s_ii; f_ij = r_bar * sqrt(s_ii * s_jj)
+  3. pi_hat = sum_{ij} (1/T) sum_t [x_it * x_jt - s_ij]^2
+  4. rho_hat = sum_i pi_ii + sum_{i!=j} (r_bar/2)[sqrt(s_jj/s_ii)*theta_ii,ij
+              + sqrt(s_ii/s_jj)*theta_jj,ij],
+     theta_kk,ij = (1/T) sum_t [(x_kt^2 - s_kk)(x_it x_jt - s_ij)]
+  5. gamma_hat = sum_{ij}(f_ij - s_ij)^2;
+     delta = clamp(kappa_hat/T, 0, 1) with kappa_hat = (pi_hat - rho_hat)/gamma_hat
+  6. Sigma_LW = delta*F + (1-delta)*S
+
+Integration: CovarianceEngine.shrunkCovariance() -> ShrinkageResult(sigma, delta).
+PortfolioRiskService uses Sigma_LW for vol/VaR/MCR/CCR when N >= 3 and
+cfo.risk.shrinkage-enabled=true (default); populates shrinkageIntensity.
+Betas stay pairwise (shrinkage would bias them).
+PSD guard: EigenDecomposition (in commons-math3); clip eigenvalues < -1e-10 to 0 and
+reconstruct.
+
+Tests: LedoitWolfShrinkageTest — 3-asset T=10 fixture with offline-computed goldens
+(F entries, delta, Sigma_LW entries to 1e-9); delta in [0,1] property;
+large-T i.i.d. -> delta approx 0; min-eigenvalue >= 0.
+
+Status: DONE (2026-06-11)
+
+---
+
+Phase 3 — Tax engine: grandfathering, lots, netting, harvesting (M)
+
+- 3a. Section 55(2)(ac) grandfathering — investment/service/CapitalGainsTaxService.java:
+  equity assets with purchaseDate < 2018-02-01 -> cost = max(actualCost,
+  min(FMV_31Jan2018, salePrice)). FMV via new StockPriceService.closeOn(symbol, date)
+  (DB-first, else one-shot Yahoo chart period1/period2 fetch, persisted).
+  Config cfo.tax.grandfathering-date=2018-01-31.
+  Golden test: cost 100, FMV 500, sell 400 -> gain 0; sell 600 -> gain 100.
+
+- 3b. FIFO lot tracking — new investment/service/LotTrackingService.java: rebuild lots from
+  cfo/model/Transaction BUY/SELLs (Groww holdings lack purchase dates; transactions have
+  them); fallback to Investment.purchaseDate single lot + note.
+  Output HoldingLot(symbol, buyDate, qty, costPerUnit, isLongTermAsOf) — derived, not
+  persisted.
+
+- 3c. Loss netting — STCL offsets STCG then LTCG; LTCL offsets LTCG only; exemption applied
+  to net LTCG; report 8-AY carry-forward residue informationally.
+
+- 3d. Harvesting engine — new investment/service/TaxHarvestingService.java:
+  FY exemption headroom = 125000 - realizedNetLTCG; rank harvestable long-term gain lots
+  (smallest market impact first); flag lots crossing 1-year boundary within 30 days
+  ("wait N days: STCG 20% -> LTCG 12.5%"). Narrative-only output to CFOAdvisorService.
+
+- Split MUTUAL_FUND regime: add equity-oriented vs debt distinction (debt MF post-Apr-2023 =
+  slab rate; add cfo.tax.slab-rate config + per-Investment classification heuristic with note
+  when ambiguous).
+
+Tests: hand-computed rupee amounts for all four services.
+
+Status: DONE (2026-06-11)
+
+---
+
+Phase 4 — Peer percentiles, benchmark TWRR, compounding goals (M)
+
+- 4a. Peer valuation percentiles — new cfo/service/research/PeerUniverseService.java
+  implementing existing MarketDataProvider.FundamentalsProvider
+  (supportsNormalizedPeers()=true). Universe = gazetteer sectors
+  (data/symbol_gazetteer.csv has SECTOR column); fetch peer P/E & P/B via existing
+  FundamentalsService Yahoo path (respect cfo.price.inter-symbol-delay-ms), persist into
+  peers' StockFundamentals snapshots. Hazen percentile (rank-0.5)/n*100; require n>=5 valid
+  peers else null + note; exclude negative-earnings P/Es. Populates the dead
+  peerGroup/peerPePercentile/peerPbPercentile fields; scorecard valuation pillar blends
+  z-score/peer-percentile 50/50 when both exist.
+  Scheduler: Sunday 10:00 weekly refresh.
+
+- 4b. Benchmark TWRR + IR — PortfolioPerformanceService.java: Nifty geometric return over
+  the exact TWRR window (^NSEI in StockPriceHistory; bump benchmark fetch 365->730d);
+  daily active series a_t = r_p,t - r_b,t; IR = annActive / (sigma(a)*sqrt(252)).
+  Extend performance record + CFOAdvisorService surfacing.
+
+- 4c. Compounding goal trajectory — goal/service/GoalAnalyzerService.java:
+  expected corpus at month m: E_m = P0*(1+i)^m + SIP*((1+i)^m - 1)/i,
+  i = (1+annual)^(1/12) - 1; status from actual/E_m with existing -5/-10% thresholds.
+  PMT solver unchanged.
+
+- 4d. Numeric expected return — StockScorecardService:
+  expectedReturnAnnualPct = 100/PE + clamp(revGrowth, -5%, +15%) +/- sector-band half-width;
+  keep label as derived description (snapshot stores JSON, no schema break).
+
+Status: DONE (2026-06-11)
+
+---
+
+Phase 5 — Technical signals + scorecard refinement (M)
+
+- 5a. Events + Bollinger + volume — TechnicalAnalysisService:
+  cross event = sign flip of sma50-sma200 today vs yesterday -> crossEvent enum +
+  daysSinceLastCross (<=120 scan); Bollinger(20, 2*sigma) with %B and bandwidth; OBV;
+  20d rolling VWAP (sum(typical*vol)/sum(vol), typical=(H+L+C)/3);
+  volumeRatio = vol/avgVol20. ONE TechnicalSnapshot constructor break (~7 fields);
+  momentum pillar discounts breakouts on volumeRatio < 0.7.
+  Hand-computed goldens (Bollinger 25-point, OBV canonical, engineered last-bar cross).
+
+- 5b. News magnitude — StockScorecardService:
+  base x (actionabilityScore/100) x horizonMult{SHORT 1.0, MED 0.8, LONG 0.6} x
+  impactMult{STOCK 1.0, SECTOR 0.6, POLICY/REG 0.7, MACRO 0.4, MIXED 0.6} x
+  existing ageWeight*sourceReliability; prefer fundamentalSentiment when present.
+  All fields already on NewsArticle — pure wiring.
+
+- 5c. Probabilistic recommendation + hysteresis —
+  convictionPct = 100/(1+exp(-(total-62)/6))
+  (config cfo.scorecard.logistic-center/scale); BUY needs conviction >=70 AND
+  confidence >=70; flip only if total moved >=3 pts past boundary vs latest
+  StockScorecardSnapshot. Hard AVOID guards stay. Boundary-flap test.
+
+Status: DONE (2026-06-12)
+
+---
+
+Phase 6 — Macro ingestion: FII/DII, RBI, yield curve (M)
+
+- 6a. FII/DII flows — extract cookie-session bootstrap from NSEIndiaPriceProvider into
+  shared cfo/service/price/NseSessionManager.java FIRST.
+  New cfo/service/macro/FiiDiiFlowProvider.java:
+  https://www.nseindia.com/api/fiidiiTradeReact (FII/DII buy/sell Rs Cr) -> populate
+  existing MacroSnapshot.fiiNetFlow/diiNetFlow/flowsAsOf.
+  New 19:00 weekday scheduler slot (NSE publishes post-market).
+  Signal: 5-day cumulative FII; |5d| > Rs 10,000 Cr -> FLOW_PRESSURE macro note.
+  Failure -> null fields + staleness flag (no NSDL XLS parser).
+
+- 6b. RBI repo scraper (off by default) — cfo/service/macro/RbiRateProvider.java behind
+  cfo.macro.live-rbi-enabled=false: strict regex on RBI homepage "Current Rates"
+  (Policy Repo Rate\s*:?\s*([0-9.]+)%); discard if outside 3-10%; config stays source
+  of truth. CPI stays config; digest staleness message tells user the MoSPI release cadence.
+
+- 6c. Yield curve — cfo/service/macro/YieldCurveService.java:
+  tenors from config cfo.macro.gsec.3m/1y/5y/10y (FBIL scraper = later hardening task,
+  off by default). Computed signals are pure Java: slope 10Y-3M / 10Y-1Y;
+  INVERTED <0 / FLAT <50bp / STEEP >150bp; feeds activeMacroRegimes() (CURVE_INVERSION)
+  and scorecard macro pillar (banks -3 inversion / +2 steepening).
+  Additive MacroSnapshot columns gsec3m, gsec1y, gsec5y, curveSlope10y3m
+  (JPA entity — no constructor break).
+
+Status: DONE (2026-06-12)
+
+---
+
+Phase 7 — Multi-quarter fundamental trend (M)
+
+- FundamentalsService: add Yahoo quoteSummary modules earnings,
+  balanceSheetHistoryQuarterly, cashflowStatementHistoryQuarterly,
+  incomeStatementHistoryQuarterly (same v10 call, comma-joined).
+
+- New entity cfo/model/QuarterlyFundamentals.java + repository:
+  symbol, quarterEnd, revenue, netIncome, eps, totalAssets, totalLiabilities,
+  sharesOutstanding, operatingCashFlow, grossMargin.
+  Yahoo backfills 4 quarters; accumulates to 8+; trendConfidence=LOW until >=6.
+
+- New cfo/service/research/FundamentalTrendService.java:
+  8-quarter revenue/EPS CAGR + margin slope (SimpleRegression);
+  Sloan accrual ratio (NI - CFO)/avgAssets (>0.10 = earnings-quality red flag);
+  share dilution delta_sharesOutstanding YoY.
+  Wire both into Piotroski (6 -> 8 of 9 classic checks).
+  Scorecard growth pillar consumes trend; emit EvidenceItems.
+
+Status: DONE (2026-06-12)
+
+---
+
+Phase 8 — Index-based multi-factor risk model (L)
+
+- Data: generalize StockPriceService.fetchAndPersistBenchmark to a config-driven index
+  fetcher: cfo.factors.indices=^NSEI,^NSEBANK,^CNXIT,^CNXPHARMA,^CNXFMCG,^CNXAUTO,
+  ^CNXMETAL,^CNXENERGY,^NSEMDCP50,^CNXSC at 730d into StockPriceHistory.
+  Verify each ticker at implementation time; silently drop missing (style indices
+  unreliable on Yahoo). Piggyback on the 16:00 price job.
+
+- New cfo/service/analytics/FactorReturnService.java:
+  MKT = r(^NSEI); SIZE = r(midcap) - r(^NSEI) (spread to decollinearize);
+  SECTOR_k = r(sector idx) - r(^NSEI).
+  Reuses ReturnSeriesService + CovarianceEngine.align().
+
+- New cfo/service/analytics/FactorModelService.java:
+  per holding, OLS (OLSMultipleLinearRegression):
+  r_i = alpha + beta_mkt*MKT + beta_size*SIZE + beta_sec*SECTOR_{s(i)} + eps
+  — exactly 3 regressors (own sector only, avoids multicollinearity).
+  Min 120 aligned obs else exclude + note. Per holding: betas, R2, idio vol sigma_eps*sqrt(252)
+  (document t-stats are HAC-naive, display filter >=|2| only).
+  Portfolio: B = sum w_i * beta_i; factor covariance Sigma_F through Phase-2 LW shrinkage;
+  systematic var = B' * Sigma_F * B; idio var = sum w_i^2 * sigma2_eps,i;
+  report %systematic, per-factor contributions, and reconciliation vs w'Sigma_w
+  (report both, never force).
+
+- New sibling record cfo/model/FactorRiskReport.java -> new CFOAdvisorService context section.
+
+- Test: simulate-and-recover — 200-day fixture generated from known betas
+  (beta_mkt=1.2, beta_size=0.5, beta_sector=0.8, fixed seed);
+  recover within +-0.1, systematic share +-5pts.
+
+Status: DONE (2026-06-12)
+
+---
+
+Phase 9 — GARCH(1,1) + liquidity-adjusted VaR (L)
+
+- 9a. cfo/service/analytics/GarchService.java:
+  sigma2_t = omega + alpha * eps2_{t-1} + beta * sigma2_{t-1};
+  log-likelihood -0.5 * sum[ln(2*pi) + ln(sigma2_t) + eps2_t/sigma2_t],
+  seed sigma2_1 = sample variance.
+  Optimize with SimplexOptimizer + NelderMeadSimplex over transformed params:
+  omega=exp(theta1), p=alpha+beta=sigmoid(theta2)*0.9999, alpha=p*sigmoid(theta3).
+  Init alpha=0.05 beta=0.90.
+  Fallback to EWMA (P1g lambdas) when T<250, non-convergence, alpha+beta>=0.999,
+  or unconditional vol >3x sample — always with note.
+  Forecast: sigma2_{t+h} = sigma2_LR + (alpha+beta)^{h-1}*(sigma2_{t+1} - sigma2_LR),
+  sigma2_LR = omega/(1-alpha-beta); 10-day vol = sqrt(sum sigma2_{t+h}).
+  New record cfo/model/VolForecast.java; PortfolioRiskService.forwardRisk() fits on
+  the portfolio series (one fit).
+  Test: 3000 simulated obs, (omega,alpha,beta)=(2e-6,0.08,0.90), fixed seed ->
+  recover alpha+-0.04 beta+-0.05; fallback triggers.
+
+- 9b. cfo/service/analytics/LiquidityService.java:
+  Corwin-Schultz 2012 spread from H/L (fields exist on StockPriceHistory):
+  beta_cs = [ln(H_t/L_t)]^2 + [ln(H_{t+1}/L_{t+1})]^2;
+  gamma_cs = [ln(H_2d/L_2d)]^2;
+  alpha_cs = (sqrt(2*beta_cs) - sqrt(beta_cs))/(3-2*sqrt(2))
+             - sqrt(gamma_cs/(3-2*sqrt(2)));
+  S = 2*(exp(alpha_cs)-1)/(1+exp(alpha_cs));
+  floor negatives at 0 before 60d averaging; overnight-gap adjustment.
+  DTL_i = shares_i / (0.20 * ADV20_i).
+  LVaR = VaR95 + 0.5 * sum(S_i * w_i * V) (+ stressed x2 variant).
+  New record cfo/model/LiquidityReport.java (spreads bps, DTL, weightLiquidatableIn1d/5d,
+  lvar95, illiquid flags DTL>5). Hand-computed 3-day CS fixture to 1e-8.
+
+Status: PENDING
+
+---
+
+Phase 10 — NSE option chain: IV, PCR, IV percentile (M/L)
+
+- New cfo/service/price/NseOptionChainProvider.java using P6a NseSessionManager:
+  /api/option-chain-equities?symbol=X + /api/option-chain-indices?symbol=NIFTY.
+  ATM IV = mean CE/PE impliedVolatility at strike nearest spot (NSE provides IV —
+  no BS inversion); PCR_OI, PCR_volume.
+
+- New entity cfo/model/OptionMetricsSnapshot.java + repo:
+  symbol, snapshotDate, expiry, atmIv, pcrOi, pcrVolume, spot.
+  IV percentile self-accumulates: Hazen rank vs own trailing 252d
+  (extract shared PercentileUtil from P4a); LOW_CONFIDENCE until >=60 obs.
+  ivVsVix = atmIv / indiaVix.
+
+- Scheduler 15:45 weekdays, F&O-listed holdings only
+  (gazetteer gains additive FNO column).
+  Deep-dive gains "options market" section; scorecard risk pillar:
+  IV pctile >80 -> penalty + evidence item.
+
+- Highest-fragility item: strict parse-or-fail, 24h circuit breaker after 3 failures,
+  all consumers null-tolerant. Parser golden test from stored fixture JSON.
+
+Status: PENDING
+
+---
+
+Phase 11 — Monte Carlo goal engine (M)
+
+- New goal/service/MonteCarloGoalService.java:
+  GBM monthly V_{m+1} = V_m * exp((mu - sigma^2/2)*dt + sigma*sqrt(dt)*Z) + SIP,
+  dt=1/12, 10,000 paths, injectable seed;
+  mu/sigma from PortfolioRiskService (fallback: goal's expectedAnnualReturn +
+  asset-mix default vol); inflation-adjusted target reuses FinancialGoal.inflationRate.
+  Optional bootstrap mode (cfo.goal.mc-mode=bootstrap) resampling historical monthly
+  portfolio returns when >=36 months.
+
+- Output GoalSimulationResult: pSuccess, corpus P10/P25/P50/P75/P90, required SIP at
+  50/75/90% confidence via bisection (monotone, 30 iters, Rs 100 tol).
+  GoalAnalyzerService keeps PMT headline; MC is the uncertainty layer
+  ("72% chance at current SIP; Rs X/mo for 90%").
+
+- Tests: fixed-seed reproducibility; sigma->0 degenerates exactly to closed-form annuity;
+  bisection monotonicity.
+
+Status: PENDING
+
+---
+
+Phase 12 — MF look-through + Brinson attribution (L)
+
+- 12a. Look-through — AMFI has no portfolio API; per-AMC Excel formats vary.
+  Contract: manual CSV import first via existing document/ upload path.
+  New entity cfo/model/MfPortfolioHolding.java (schemeCode, asOf, isin/symbol,
+  weightPct, sector) + cfo/service/ingestion/MfPortfolioImportService.java +
+  cfo/service/analytics/LookThroughService.java:
+  effectiveWeight(stock) = direct + sum_f w_f * h_{f,stock};
+  unmapped residue tracked. Feeds effective HHIs and P8 factor exposures when
+  MF coverage >=70%, else note-only. Always stamp asOf (monthly at best).
+
+- 12b. Brinson-Fachler — new cfo/service/analytics/AttributionService.java.
+  Benchmark sector weights: new data/nifty_sector_weights.csv
+  (manual quarterly refresh from NSE factsheet; staleness >120d warning).
+  Per monthly bucket:
+  A_s = (w_p,s - w_b,s) * (r_b,s - r_b)       [allocation effect]
+  S_s = w_b,s * (r_p,s - r_b,s)                [selection effect]
+  I_s = (w_p,s - w_b,s) * (r_p,s - r_b,s)     [interaction effect]
+  reconciles to r_p - r_b; geometric linking with explicit residual.
+  r_b,s from P8 sector index series.
+  Output AttributionReport -> "why you beat/lagged Nifty" narrative.
+  Textbook 3-sector golden test reconciling exactly.
+
+Status: PENDING
+
+---
+
+Risk Register
+
+Risk                              | Phase  | Mitigation
+----------------------------------|--------|----------------------------------------------------------
+NSE API blocking/shape change     | 6a, 10 | NseSessionManager, parse-or-fail, 24h circuit breaker,
+                                  |        | null-tolerant consumers
+Yahoo style-index tickers absent  | 8      | verify at implementation, drop missing, degrade to
+                                  |        | MKT+SIZE+SECTOR
+RBI/MoSPI scraping fragility      | 6b     | config-first, scraper off by default, 3-10% sanity
+                                  |        | range, staleness nags
+AMFI no portfolio API             | 12a    | manual CSV import is the contract
+Record constructor churn          | all    | one RiskDecomposition break (P1), one TechnicalSnapshot
+                                  |        | break (P5a); everything else sibling records
+GARCH non-convergence             | 9      | hard EWMA fallback + note
+Yahoo rate limits (peer universe) | 4a     | weekly cadence, inter-symbol-delay-ms, incremental
+                                  |        | warm-up
+
+---
+
+Verification
+
+Per phase: ./mvnw -o test green (existing + new goldens per module — hand-computed fixtures
+matching existing CovarianceEngineTest/TechnicalAnalysisServiceTest style; simulate-and-recover
+for GARCH/factor model; fixed-seed for Monte Carlo).
+
+After data-ingestion phases (6, 8, 10): boot app (./mvnw spring-boot:run), trigger the
+provider once, confirm persisted rows + graceful-null on forced failure.
+
+End-to-end: generate a brief via CFOAdvisorService and confirm new sections (factor risk,
+vol forecast, liquidity, attribution) render with real numbers and data-quality notes.
+
+Key files (most-touched):
+- cfo/service/analytics/PortfolioRiskService.java, CovarianceEngine.java,
+  TechnicalAnalysisService.java, PortfolioPerformanceService.java
+- cfo/model/RiskDecomposition.java (one break), TechnicalSnapshot.java (one break),
+  MacroSnapshot.java (additive)
+- cfo/service/research/FundamentalsService.java, StockScorecardService.java
+- investment/service/CapitalGainsTaxService.java; goal/service/GoalAnalyzerService.java
+- cfo/service/macro/MacroStateService.java; cfo/scheduler/CFOScheduler.java
+
+---
+
+Progress Summary
+
+Phase  | Description                         | Status
+-------|-------------------------------------|----------------------
+P1     | Statistical correctness fixes       | DONE (2026-06-11)
+P2     | Ledoit-Wolf covariance shrinkage    | DONE (2026-06-11)
+P3     | Tax engine (grandfathering, lots)   | DONE (2026-06-11)
+P4     | Peers, TWRR, goal compounding       | DONE (2026-06-11)
+P5     | Technical signals + scorecard       | DONE (2026-06-12)
+P6     | Macro ingestion (FII/DII, yield)    | DONE (2026-06-12)
+P7     | Multi-quarter fundamental trend     | DONE (2026-06-12)
+P8     | Index multi-factor risk model       | DONE (2026-06-12)
+P9     | GARCH(1,1) + liquidity VaR          | DONE
+P10    | NSE option chain (IV, PCR)          | DONE
+P11    | Monte Carlo goal engine             | DONE
+P12    | MF look-through + Brinson           | PENDING

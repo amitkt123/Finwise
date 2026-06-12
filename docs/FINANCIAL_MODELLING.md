@@ -51,6 +51,8 @@ The implementation is pragmatic v1, not a full institutional data platform. Free
 | Covariance, beta, drawdown, EWMA, stress metrics | `CovarianceEngine` |
 | Portfolio risk | `PortfolioRiskService`, `RiskDecomposition` |
 | Factor risk model | `FactorModelService`, `FactorReturnService`, `FactorRiskReport` |
+| MF look-through | `LookThroughService`, `MfPortfolioImportService`, `MfPortfolioHolding`, `LookThroughResult` |
+| Performance attribution | `AttributionService`, `AttributionReport` |
 | Technicals | `TechnicalAnalysisService`, `TechnicalSnapshot` |
 | Fundamentals | `FundamentalsService`, `StockFundamentals` |
 | Research assembly | `StockIntelligenceService`, `StockDeepDive` |
@@ -519,6 +521,105 @@ to reconcile.
 conventions; excluded weight above 25 percent or any missing factor forces
 LOW_CONFIDENCE.
 
+## Mutual-Fund Look-Through (Phase 12a)
+
+Classes: `LookThroughService`, `MfPortfolioImportService`, entity `MfPortfolioHolding`,
+output `LookThroughResult`
+
+AMFI exposes no portfolio API and per-AMC factsheet formats vary, so the ingestion
+contract is a **manual CSV import** through the document/ upload path
+(`POST /api/cfo/mf-portfolio/import`). Each row is one fund constituent:
+
+```text
+schemeCode , asOf(yyyy-MM-dd) , isin , symbol , weightPct , sector
+```
+
+Composition is a property of the FUND, not the user — rows are keyed by
+`schemeCode + asOf` and shared across every investor holding the scheme. A re-import for
+the same `schemeCode + asOf` fully replaces the prior snapshot (idempotent corrections).
+`asOf` is always stamped because disclosures are monthly at best.
+
+### Effective Exposure
+
+For each {@code MUTUAL_FUND} position the investment's `symbol` is treated as the scheme
+code; the latest disclosure on file is used. The true exposure to each stock is:
+
+```text
+effectiveWeight(stock) = directWeight(stock) + Σ_f w_f · h_{f,stock}
+```
+
+where `w_f` is the fund's weight in the portfolio and `h_{f,stock}` the stock's
+within-fund weight. The portion of fund money whose constituents are not disclosed (or
+unresolvable to a symbol) is carried as **unmapped residue** — never dropped, never
+spread across known names.
+
+### Coverage Gate
+
+```text
+mfCoverage = seenThroughWeight / totalMfWeight
+feedsModel = mfCoverage ≥ 0.70
+```
+
+When `feedsModel` is true the effective name/sector HHIs (and, by extension, the P8
+factor exposures) are trusted; below 70% the look-through is **note-only**. Effective
+HHIs are reported next to the pre-look-through direct HHIs so the report shows the
+concentration that fund holdings hide (e.g. a bank held both directly and inside several
+funds).
+
+### Data Quality
+
+`MF_NO_DISCLOSURE`, `MF_UNMAPPED`, `MF_STALE` (disclosure > 120 days), `MF_COVERAGE`,
+and `LOOK_THROUGH_NOTE_ONLY` notes mirror the risk-engine conventions. Every scheme's
+disclosure `asOf` is stamped in the output.
+
+## Performance Attribution (Phase 12b)
+
+Classes: `AttributionService`, output `AttributionReport`, benchmark weights
+`data/nifty_sector_weights.csv`
+
+Brinson-Fachler decomposition of the portfolio's excess return over Nifty into
+allocation, selection, and interaction effects, per sector, per monthly bucket.
+
+### Single-Bucket Identities
+
+```text
+A_s = (w_p,s − w_b,s)(r_b,s − r_b)        allocation
+S_s = w_b,s (r_p,s − r_b,s)               selection
+I_s = (w_p,s − w_b,s)(r_p,s − r_b,s)      interaction
+Σ_s (A_s + S_s + I_s) = r_p − r_b
+```
+
+Portfolio and benchmark weights are renormalized to sum to 1 over the bucket's sectors
+(a prerequisite for the identity). Sectors are keyed by **NSE sector-index ticker** so a
+holding's gazetteer sector ("Banking") and the benchmark's factsheet sector ("Financial
+Services") — both mapping to `^NSEBANK` via `FactorProperties` — land in the same bucket.
+
+- `w_b,s` — benchmark sector weights from `data/nifty_sector_weights.csv` (manual
+  quarterly refresh from the NSE factsheet; `asOf` header drives a staleness > 120d
+  warning). Weights are aggregated to index tickers; sectors with no index (e.g.
+  "Others") are excluded and reported as a benchmark-coverage note.
+- `r_b,s` — benchmark sector return = the P8 sector-index monthly return.
+- `r_p,s` — value-weighted monthly return of the holdings mapped to that sector index.
+- `r_b = Σ_s w_b,s · r_b,s` is computed from the sector decomposition (not from `^NSEI`
+  directly) so the reconciliation identity holds exactly.
+
+### Geometric Linking (Cariño)
+
+Monthly buckets are linked with the Cariño coefficient so the linked effects reconcile
+to the compounded excess return:
+
+```text
+k_t = (ln(1+R_pt) − ln(1+R_bt)) / (R_pt − R_bt)      [→ 1/(1+R) at R_pt = R_bt]
+linked effect = Σ_t (k_t / k) · effect_t
+```
+
+The `residual` = (linked allocation + selection + interaction) − (R_p − R_b) is reported
+**explicitly** rather than absorbed; with Cariño it vanishes to floating-point epsilon.
+
+The output drives a "why you beat/lagged Nifty" narrative
+(`GET /api/cfo/attribution`). `lowConfidence` is set when benchmark weights are stale,
+missing an `asOf`, or part of the portfolio sits in sectors with no index.
+
 ## Technical Analysis Model
 
 Class: `TechnicalAnalysisService`
@@ -968,6 +1069,9 @@ Current important tests:
 - `FundamentalsServiceTest`
 - `StockScorecardServiceTest`
 - `StockIntelligenceServiceGoldenTest`
+- `AttributionServiceTest` — textbook 3-sector Brinson-Fachler reconciling exactly; Cariño linking residual
+- `LookThroughServiceTest` — effective exposure, unmapped residue, 70% coverage gate
+- `MfPortfolioImportServiceTest` — CSV parse, idempotent snapshot replace, malformed-row tolerance
 
 ### Formula Tests
 

@@ -2,8 +2,10 @@ package org.amit.finwise.goal.controller;
 
 import lombok.RequiredArgsConstructor;
 import org.amit.finwise.goal.model.FinancialGoal;
+import org.amit.finwise.goal.model.GoalSimulationResult;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.goal.service.GoalAnalyzerService;
+import org.amit.finwise.goal.service.MonteCarloGoalService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -17,6 +19,7 @@ import java.util.List;
 public class GoalController {
 
     private final GoalAnalyzerService goalAnalyzerService;
+    private final MonteCarloGoalService monteCarloGoalService;
     private final FinancialGoalRepository goalRepository;
 
     @PostMapping("/goal")
@@ -41,6 +44,15 @@ public class GoalController {
     @GetMapping("/goal/{id}/analysis")
     public ResponseEntity<GoalAnalyzerService.GoalAnalysis> analyzeGoal(@PathVariable Long id) {
         return ResponseEntity.ok(goalAnalyzerService.analyzeGoal(id));
+    }
+
+    @GetMapping("/goal/{id}/simulate")
+    public ResponseEntity<GoalSimulationResult> simulateGoal(
+            @PathVariable Long id,
+            @RequestParam(required = false) Double monthlySip) {
+        FinancialGoal goal = goalRepository.findById(id)
+                .orElseThrow(() -> new RuntimeException("Goal not found"));
+        return ResponseEntity.ok(monteCarloGoalService.simulate(goal, monthlySip));
     }
 
     @GetMapping("/goal/alerts")

@@ -1,0 +1,17 @@
+# Nifty 50 sector weights — benchmark for Brinson-Fachler attribution (Phase 12b).
+# Manual quarterly refresh from the NSE Nifty 50 factsheet. Staleness > 120 days
+# from asOf raises a LOW_CONFIDENCE warning in AttributionService.
+# Sector labels must match the gazetteer sectors that FactorProperties.indexForSector
+# maps to an NSE sector index; sectors without an index (e.g. "Others") are excluded
+# from attribution and reported as a benchmark-coverage note.
+# Format: Sector,weightPct
+# asOf=2026-04-30
+Financial Services,37.0
+IT,13.0
+Energy,12.0
+FMCG,9.0
+Auto,8.0
+Pharma,6.0
+Metals,5.0
+Power,5.0
+Others,5.0

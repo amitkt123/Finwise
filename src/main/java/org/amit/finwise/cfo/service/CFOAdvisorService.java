@@ -76,6 +76,8 @@ public class CFOAdvisorService {
     private final IntentClassifier intentClassifier;
     private final StockIntelligenceService stockIntelligenceService;
     private final org.amit.finwise.investment.service.TaxHarvestingService taxHarvestingService;
+    private final org.amit.finwise.cfo.service.analytics.LookThroughService lookThroughService;
+    private final org.amit.finwise.cfo.service.analytics.AttributionService attributionService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -542,6 +544,8 @@ public class CFOAdvisorService {
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);   // Phase 1: real portfolio risk math
         appendFactorRiskReport(ctx, userId);          // Phase 8: multi-factor decomposition
+        appendLookThrough(ctx, userId);               // Phase 12a: MF look-through exposure
+        appendAttribution(ctx, userId);               // Phase 12b: Brinson-Fachler attribution
         appendNewsSentimentRisk(ctx, userId);         // news-based risk signal (renamed)
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
@@ -563,6 +567,8 @@ public class CFOAdvisorService {
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);
         appendFactorRiskReport(ctx, userId);
+        appendLookThrough(ctx, userId);
+        appendAttribution(ctx, userId);
         appendNewsSentimentRisk(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
         appendPortfolioHoldings(ctx, userId);
@@ -581,6 +587,8 @@ public class CFOAdvisorService {
         appendMarketContextSummary(ctx, userId);
         appendQuantRiskDecomposition(ctx, userId);
         appendFactorRiskReport(ctx, userId);
+        appendLookThrough(ctx, userId);
+        appendAttribution(ctx, userId);
         appendNewsSentimentRisk(ctx, userId);
         appendUserProfile(ctx, userId);
         appendPortfolioSnapshot(ctx, userId);
@@ -1247,6 +1255,96 @@ public class CFOAdvisorService {
 
         } catch (Exception e) {
             log.warn("[CFO] Factor risk report failed, skipping block: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Injects a ## Mutual-Fund Look-Through block (Phase 12a): the portfolio's TRUE
+     * effective per-stock and per-sector exposure after exploding funds into their
+     * disclosed constituents, plus the effective HHIs. When MF coverage is below 70%
+     * the effective HHIs are flagged note-only so the LLM does not over-trust them.
+     * The LLM narrates; LookThroughService computes. Silently omitted when there is
+     * no portfolio data.
+     */
+    private void appendLookThrough(StringBuilder ctx, String userId) {
+        try {
+            Optional<org.amit.finwise.cfo.model.LookThroughResult> ltOpt =
+                    lookThroughService.compute(userId);
+            if (ltOpt.isEmpty()) return;
+            var lt = ltOpt.get();
+            if (lt.mfWeight() <= 0) return;   // no funds → look-through == direct book, skip
+
+            ctx.append("## Mutual-Fund Look-Through (Quantitative)\n");
+            if (!lt.feedsModel()) {
+                ctx.append("⚠ NOTE_ONLY: MF coverage below 70% — effective HHIs are indicative, "
+                        + "not authoritative\n");
+            }
+            for (String note : lt.dataQualityNotes()) ctx.append("⚠ ").append(note).append("\n");
+
+            ctx.append(String.format(
+                    "Mutual-fund weight %.1f%% | seen-through %.0f%% | unmapped residue %.1f%%\n",
+                    lt.mfWeight() * 100, lt.mfCoverage() * 100, lt.unmappedResidue() * 100));
+            ctx.append(String.format(
+                    "Name concentration HHI — direct %.3f → effective %.3f | "
+                            + "Sector HHI — direct %.3f → effective %.3f\n",
+                    lt.directNameHHI(), lt.effectiveNameHHI(),
+                    lt.directSectorHHI(), lt.effectiveSectorHHI()));
+
+            ctx.append("Top effective stock exposures (direct + via funds):\n");
+            lt.effectiveWeights().entrySet().stream()
+                    .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                    .limit(8)
+                    .forEach(e -> {
+                        double direct = lt.directWeights().getOrDefault(e.getKey(), 0.0);
+                        double viaFund = lt.fundContributed().getOrDefault(e.getKey(), 0.0);
+                        ctx.append(String.format("  - %s %.1f%% (direct %.1f%% + funds %.1f%%)\n",
+                                e.getKey(), e.getValue() * 100, direct * 100, viaFund * 100));
+                    });
+            ctx.append("Headline: ").append(lt.headline()).append("\n\n");
+        } catch (Exception e) {
+            log.warn("[CFO] Look-through failed, skipping block: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Injects a ## Performance Attribution block (Phase 12b): the Brinson-Fachler
+     * decomposition of the portfolio's excess return over Nifty into allocation,
+     * selection, and interaction effects per sector — the "why you beat/lagged Nifty"
+     * narrative. AttributionService computes and geometrically links the buckets; the
+     * LLM only narrates. Silently omitted when there is insufficient history.
+     */
+    private void appendAttribution(StringBuilder ctx, String userId) {
+        try {
+            Optional<org.amit.finwise.cfo.model.AttributionReport> arOpt =
+                    attributionService.compute(userId);
+            if (arOpt.isEmpty()) return;
+            var ar = arOpt.get();
+
+            ctx.append("## Performance Attribution vs Nifty (Quantitative)\n");
+            if (ar.lowConfidence()) {
+                ctx.append("⚠ LOW_CONFIDENCE: attribution degraded — see notes below\n");
+            }
+            for (String note : ar.dataQualityNotes()) ctx.append("⚠ ").append(note).append("\n");
+
+            ctx.append(String.format("Window: %s → %s (%d monthly buckets, Cariño-linked)\n",
+                    ar.windowStart(), ar.windowEnd(), ar.buckets()));
+            ctx.append(String.format(
+                    "Portfolio %.2f%% vs Nifty %.2f%% → excess %+.2f%%\n",
+                    ar.portfolioReturn() * 100, ar.benchmarkReturn() * 100, ar.excessReturn() * 100));
+            ctx.append(String.format(
+                    "Effects — Allocation %+.2f%% | Selection %+.2f%% | Interaction %+.2f%% "
+                            + "(residual %.2e)\n",
+                    ar.allocationEffect() * 100, ar.selectionEffect() * 100,
+                    ar.interactionEffect() * 100, ar.residual()));
+
+            ctx.append("By sector (allocation / selection / interaction → total):\n");
+            ar.sectors().stream().limit(8).forEach(s -> ctx.append(String.format(
+                    "  - %s: %+.2f%% / %+.2f%% / %+.2f%% → %+.2f%%\n",
+                    s.sector(), s.allocation() * 100, s.selection() * 100,
+                    s.interaction() * 100, s.total() * 100)));
+            ctx.append("Headline: ").append(ar.headline()).append("\n\n");
+        } catch (Exception e) {
+            log.warn("[CFO] Attribution failed, skipping block: {}", e.getMessage());
         }
     }
 

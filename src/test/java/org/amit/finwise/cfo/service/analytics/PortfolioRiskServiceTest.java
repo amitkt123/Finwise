@@ -43,8 +43,10 @@ class PortfolioRiskServiceTest {
 
     @BeforeEach
     void setUp() {
+        RiskProperties riskProperties = new RiskProperties();
         service = new PortfolioRiskService(
-                returnSeriesService, new CovarianceEngine(), investmentRepository, new RiskProperties());
+                returnSeriesService, new CovarianceEngine(), investmentRepository, riskProperties,
+                new GarchService(riskProperties));
     }
 
     @Test
