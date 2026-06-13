@@ -33,13 +33,15 @@ class LookThroughServiceTest {
     @Mock InvestmentRepository investmentRepository;
     @Mock MfPortfolioHoldingRepository mfHoldingRepo;
     @Mock SymbolExtractorService symbolExtractorService;
+    @Mock org.amit.finwise.marketdata.repository.MfNavRepository mfNavRepo;
 
     private LookThroughService service;
     private static final String USER = "u";
 
     @BeforeEach
     void setUp() {
-        service = new LookThroughService(investmentRepository, mfHoldingRepo, symbolExtractorService);
+        service = new LookThroughService(investmentRepository, mfHoldingRepo,
+                symbolExtractorService, mfNavRepo);
         lenient().when(symbolExtractorService.getSymbolEntry("HDFCBANK"))
                 .thenReturn(new SymbolEntry("HDFCBANK", null, "Banking", List.of()));
         lenient().when(symbolExtractorService.getSymbolEntry("TCS"))

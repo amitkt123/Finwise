@@ -47,8 +47,7 @@ public class FbilProvider {
      * orchestrator tolerates partial results.
      */
     public List<MacroObservation> fetch(LocalDate obsDate) {
-        List<MacroObservation> out = new ArrayList<>();
-        out.addAll(fetchParYields(obsDate));
+        List<MacroObservation> out = new ArrayList<>(fetchParYields(obsDate));
         fetchUsdInr(obsDate).ifPresent(out::add);
         return out;
     }

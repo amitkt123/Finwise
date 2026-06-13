@@ -22,4 +22,9 @@ public interface IngestionRunRepository extends JpaRepository<IngestionRun, Long
             String jobName, IngestionRun.Status status, int rowCount);
 
     List<IngestionRun> findByJobNameAndStatus(String jobName, IngestionRun.Status status);
+
+    Optional<IngestionRun> findTopByJobNameAndStatusOrderByBusinessDateDesc(
+            String jobName, IngestionRun.Status status);
+
+    Optional<IngestionRun> findTopByJobNameOrderByBusinessDateDesc(String jobName);
 }

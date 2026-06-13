@@ -29,6 +29,35 @@ public class IngestionRun {
     public static final String JOB_DELIVERY = "sec_bhavdata_full";
     public static final String JOB_CORPORATE_ACTION = "corporate_action";
     public static final String JOB_EVENT_CALENDAR = "event_calendar";
+    // DF-4 — funds & filings layer
+    public static final String JOB_AMFI_NAV = "amfi_nav";
+    public static final String JOB_ANNOUNCEMENT = "nse_announcement";
+    public static final String JOB_SHAREHOLDING = "shareholding_pattern";
+    public static final String JOB_BULK_DEAL = "bulk_deal";
+    public static final String JOB_BLOCK_DEAL = "block_deal";
+    // DF-6 — outcome-linked news RAG
+    public static final String JOB_NEWS_OUTCOME = "news_outcome";
+
+    /**
+     * Jobs whose freshness is tracked by the gap-repair / data-quality layer (DF-5).
+     * Each runs on (most) trading days; a missing recent weekday is an open gap.
+     */
+    public static final String[] DAILY_TRADING_JOBS = {
+            JOB_BHAVCOPY, JOB_INDEX_CLOSE, JOB_DELIVERY, JOB_AMFI_NAV,
+            JOB_BULK_DEAL, JOB_BLOCK_DEAL
+    };
+
+    /** All ingestion jobs, daily + periodic — used by the data-quality dashboard. */
+    public static final String[] ALL_JOBS = {
+            JOB_BHAVCOPY, JOB_INDEX_CLOSE, JOB_DELIVERY, JOB_CORPORATE_ACTION,
+            JOB_EVENT_CALENDAR, JOB_AMFI_NAV, JOB_ANNOUNCEMENT, JOB_SHAREHOLDING,
+            JOB_BULK_DEAL, JOB_BLOCK_DEAL, JOB_NEWS_OUTCOME
+    };
+
+    /** Critical jobs — a sustained failure here triggers an email alert (DF-5). */
+    public static final String[] CRITICAL_JOBS = {
+            JOB_BHAVCOPY, JOB_INDEX_CLOSE, JOB_AMFI_NAV
+    };
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

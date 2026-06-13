@@ -2,14 +2,14 @@ package org.amit.finwise.cfo.service.llm;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.NewsArticle;
-import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
-import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
+import org.amit.finwise.cfo.service.rag.ArticleEntityService;
+import org.amit.finwise.investment.model.Investment;
+import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -52,9 +52,10 @@ public class LlmRefinementService {
 
     private final LLMProvider llmProvider;
     private final NewsArticleRepository newsArticleRepository;
-    private final PortfolioSnapshotRepository portfolioSnapshotRepository;
+    private final InvestmentRepository investmentRepository;
     private final ObjectMapper objectMapper;
     private final org.amit.finwise.cfo.service.EmbeddingService embeddingService;
+    private final ArticleEntityService articleEntityService;
 
     @Value("${cfo.user.id}")
     private String userId;
@@ -136,6 +137,9 @@ public class LlmRefinementService {
 
         return recent.stream()
                 .filter(a -> !a.isLlmReviewed())
+                // Skip near-duplicate articles deduped into an existing cluster (DF-6):
+                // the canonical article carries the event, so don't waste inference.
+                .filter(a -> !a.isClusterDuplicate())
                 // The pipeline already flagged needsLlmReview but we re-check here
                 // using the same criteria so it's self-contained
                 .filter(this::shouldReview)
@@ -186,45 +190,28 @@ public class LlmRefinementService {
 
     private List<RefinedClassification> callLlm(List<NewsArticle> batch) {
         Set<String> holdings = getPortfolioSymbols();
-        String content = llmProvider.chat(buildSystemPrompt(holdings), buildBatchPrompt(batch));
+        // Request strict JSON where the provider supports it (Ollama format:json),
+        // so parsing relies on the schema rather than regex recovery (DF-6).
+        String content = llmProvider.chatJson(buildSystemPrompt(holdings), buildBatchPrompt(batch));
         return parseResponse(content, batch.size());
     }
 
     /**
-     * Reads the latest portfolio snapshot and extracts the NSE symbols the user
-     * currently holds. Used to personalise the LLM prompt — articles that touch
-     * actual holdings get higher actionability scores.
+     * The NSE symbols the user currently holds, read from the {@code investments}
+     * table (the system of record) — not a parsed Groww snapshot. Used to
+     * personalise the prompt so articles touching real holdings score higher.
      *
-     * Returns an empty set (gracefully) if no snapshot exists or parsing fails.
+     * Returns an empty set (gracefully) on any failure.
      */
     private Set<String> getPortfolioSymbols() {
         try {
-            return portfolioSnapshotRepository
-                    .findTopByUserIdOrderBySnapshotTimeDesc(userId)
-                    .map(this::parseSymbolsFromSnapshot)
-                    .orElse(Set.of());
+            return investmentRepository.findActiveInvestments(userId).stream()
+                    .map(Investment::getSymbol)
+                    .filter(s -> s != null && !s.isBlank())
+                    .map(String::toUpperCase)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
         } catch (Exception e) {
             log.debug("Could not load portfolio symbols for LLM context: {}", e.getMessage());
-            return Set.of();
-        }
-    }
-
-    private Set<String> parseSymbolsFromSnapshot(PortfolioSnapshot snapshot) {
-        if (snapshot.getRawSnapshotJson() == null) return Set.of();
-        try {
-            // Structure: GrowwHoldingsResponse → payload.holdings[].trading_symbol
-            JsonNode root = objectMapper.readTree(snapshot.getRawSnapshotJson());
-            JsonNode holdings = root.path("payload").path("holdings");
-            if (!holdings.isArray()) return Set.of();
-
-            Set<String> symbols = new LinkedHashSet<>();
-            for (JsonNode h : holdings) {
-                String sym = h.path("trading_symbol").asText(null);
-                if (sym != null && !sym.isBlank()) symbols.add(sym.toUpperCase());
-            }
-            return symbols;
-        } catch (Exception e) {
-            log.debug("Failed to parse holdings from snapshot: {}", e.getMessage());
             return Set.of();
         }
     }
@@ -646,49 +633,52 @@ public class LlmRefinementService {
                         changed = true;
                     } catch (IllegalArgumentException ignored) {}
                 }
-            }
 
-            // Symbols: merge (Tier 2 gazetteer + LLM additions)
-            if (r.symbols != null && !r.symbols.isEmpty()) {
-                Set<String> merged = new LinkedHashSet<>();
-                if (article.getRelatedSymbols() != null && !article.getRelatedSymbols().isBlank()) {
-                    merged.addAll(Arrays.asList(article.getRelatedSymbols().split(",")));
+                // Symbols: merge (Tier 2 gazetteer + LLM additions) — gated by confidence
+                // so low-confidence LLM guesses don't pollute the gazetteer set (DF-6).
+                if (r.symbols != null && !r.symbols.isEmpty()) {
+                    Set<String> merged = new LinkedHashSet<>();
+                    if (article.getRelatedSymbols() != null && !article.getRelatedSymbols().isBlank()) {
+                        merged.addAll(Arrays.asList(article.getRelatedSymbols().split(",")));
+                    }
+                    merged.addAll(r.symbols);
+                    String mergedStr = String.join(",", merged);
+                    if (!mergedStr.equals(article.getRelatedSymbols())) {
+                        article.setRelatedSymbols(mergedStr);
+                        changed = true;
+                    }
                 }
-                merged.addAll(r.symbols);
-                String mergedStr = String.join(",", merged);
-                if (!mergedStr.equals(article.getRelatedSymbols())) {
-                    article.setRelatedSymbols(mergedStr);
+
+                // Sectors: merge — also gated by confidence
+                if (r.sectors != null && !r.sectors.isEmpty()) {
+                    Set<String> merged = new LinkedHashSet<>();
+                    if (article.getRelatedSectors() != null && !article.getRelatedSectors().isBlank()) {
+                        merged.addAll(Arrays.asList(article.getRelatedSectors().split(",")));
+                    }
+                    merged.addAll(r.sectors);
+                    article.setRelatedSectors(String.join(",", merged));
                     changed = true;
                 }
-            }
 
-            // Sectors: merge
-            if (r.sectors != null && !r.sectors.isEmpty()) {
-                Set<String> merged = new LinkedHashSet<>();
-                if (article.getRelatedSectors() != null && !article.getRelatedSectors().isBlank()) {
-                    merged.addAll(Arrays.asList(article.getRelatedSectors().split(",")));
-                }
-                merged.addAll(r.sectors);
-                article.setRelatedSectors(String.join(",", merged));
-                changed = true;
-            }
-
-            // Sector impact (LLM is authoritative here — it's more nuanced)
-            if (r.sectorImpact != null && !r.sectorImpact.isBlank()) {
-                article.setSectorImpact(r.sectorImpact);
-                changed = true;
-            }
-
-            // Entity-level sentiment map (Bloomberg-grade: per-entity direction)
-            if (r.entitySentiments != null && !r.entitySentiments.isEmpty()) {
-                try {
-                    // Store as compact JSON string in the TEXT column
-                    ObjectMapper om = new ObjectMapper();
-                    article.setEntitySentiments(om.writeValueAsString(r.entitySentiments));
+                // Sector impact (LLM is authoritative here — it's more nuanced)
+                if (r.sectorImpact != null && !r.sectorImpact.isBlank()) {
+                    article.setSectorImpact(r.sectorImpact);
                     changed = true;
-                } catch (Exception e) {
-                    log.warn("Failed to serialize entity sentiments: {}", e.getMessage());
                 }
+
+                // Entity-level sentiment map (Bloomberg-grade: per-entity direction)
+                if (r.entitySentiments != null && !r.entitySentiments.isEmpty()) {
+                    try {
+                        article.setEntitySentiments(objectMapper.writeValueAsString(r.entitySentiments));
+                        changed = true;
+                    } catch (Exception e) {
+                        log.warn("Failed to serialize entity sentiments: {}", e.getMessage());
+                    }
+                }
+
+                // Persist typed knowledge-graph edges from the (now-trusted) LLM call (DF-6).
+                articleEntityService.writeLlmEdges(
+                        article.getId(), r.symbols, r.sectors, r.confidence);
             }
 
             // Impact note for CFO brief
@@ -712,10 +702,10 @@ public class LlmRefinementService {
             }
 
             // Always mark as llmReviewed so processed articles are not re-queued.
-            // Relevance boost only when meaningful content changed.
+            // No flat relevance boost for being LLM-touched (DF-6): relevance is the
+            // gazetteer/personalisation signal; being reviewed isn't itself relevance.
             article.setLlmReviewed(true);
             if (changed) {
-                article.setRelevanceScore(Math.min(100, article.getRelevanceScore() + 10));
                 updated++;
                 log.debug("LLM updated [{}]: market={}, fundamental={}, category={}, actionability={}",
                         truncate(article.getTitle()), article.getSentiment(),

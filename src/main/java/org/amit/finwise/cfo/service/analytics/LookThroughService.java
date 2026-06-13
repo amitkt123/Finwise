@@ -9,6 +9,8 @@ import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
 import org.amit.finwise.investment.enums.InvestmentType;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.amit.finwise.marketdata.model.MfNav;
+import org.amit.finwise.marketdata.repository.MfNavRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -39,6 +41,7 @@ public class LookThroughService {
     private final InvestmentRepository investmentRepository;
     private final MfPortfolioHoldingRepository mfHoldingRepo;
     private final SymbolExtractorService symbolExtractorService;
+    private final MfNavRepository mfNavRepo;
 
     /** MF coverage at or above which effective exposures feed downstream models. */
     static final double COVERAGE_GATE = 0.70;
@@ -87,6 +90,12 @@ public class LookThroughService {
                     notes.add("MF_STALE: scheme " + scheme + " disclosure is " + age
                             + "d old (asOf " + asOf + ")");
                 }
+                // NAV-weighted drift (DF-4): how far the fund's NAV has moved since the
+                // disclosure date. The disclosed composition is a snapshot; a large NAV
+                // move means the true weights have drifted from what we explode below.
+                navDriftSinceDisclosure(scheme, asOf).ifPresent(drift -> notes.add(String.format(
+                        "MF_NAV_DRIFT: scheme %s NAV moved %+.1f%% since disclosure (asOf %s) — "
+                                + "exploded weights are pre-drift", scheme, drift * 100, asOf)));
 
                 List<MfPortfolioHolding> constituents =
                         mfHoldingRepo.findBySchemeCodeAndAsOf(scheme, asOf);
@@ -178,6 +187,22 @@ public class LookThroughService {
     }
 
     // ── helpers ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Fractional NAV change for an AMFI scheme between its disclosure date and the
+     * latest NAV on file, or empty when either NAV is missing. The investment's
+     * {@code symbol} is the AMFI scheme code, which is also the mf_nav key.
+     */
+    private Optional<Double> navDriftSinceDisclosure(String schemeCode, LocalDate asOf) {
+        Optional<MfNav> navAtDisclosure =
+                mfNavRepo.findTopByAmfiCodeAndNavDateLessThanEqualOrderByNavDateDesc(schemeCode, asOf);
+        Optional<MfNav> navLatest = mfNavRepo.findTopByAmfiCodeOrderByNavDateDesc(schemeCode);
+        if (navAtDisclosure.isEmpty() || navLatest.isEmpty()) return Optional.empty();
+        double base = navAtDisclosure.get().getNav().doubleValue();
+        double now = navLatest.get().getNav().doubleValue();
+        if (base <= 0) return Optional.empty();
+        return Optional.of(now / base - 1.0);
+    }
 
     private Optional<String> resolveSector(String symbol, String fallback) {
         SymbolExtractorService.SymbolEntry entry = symbolExtractorService.getSymbolEntry(symbol);

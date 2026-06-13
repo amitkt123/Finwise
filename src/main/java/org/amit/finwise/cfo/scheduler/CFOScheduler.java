@@ -36,6 +36,7 @@ public class CFOScheduler {
     private final MacroStateService macroStateService;
     private final MacroSeriesService macroSeriesService;
     private final org.amit.finwise.cfo.service.research.PeerUniverseService peerUniverseService;
+    private final org.amit.finwise.cfo.service.rag.EventOutcomeService eventOutcomeService;
     private final org.amit.finwise.cfo.config.FactorProperties factorProperties;
 
     @Value("${cfo.user.id}")
@@ -290,6 +291,23 @@ public class CFOScheduler {
             peerUniverseService.refreshForUser(defaultUserId);
         } catch (Exception e) {
             log.error("[CFO] Peer universe refresh failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 11:00 PM IST daily — outcome enrichment for the news RAG (DF-6).
+     * Runs after the EOD bhavcopy (18:45) and gap repair (22:30) have landed
+     * prices, so clusters can be scored against realized excess returns vs Nifty.
+     */
+    @Scheduled(cron = "${cfo.rag.outcome-cron:0 0 23 * * *}", zone = "Asia/Kolkata")
+    public void enrichNewsOutcomes() {
+        log.info("[CFO] Enriching news event outcomes...");
+        try {
+            var result = eventOutcomeService.enrichOutcomes();
+            log.info("[CFO] News outcome enrichment: {} clusters scanned, {} outcomes written",
+                    result.clustersScanned(), result.outcomesWritten());
+        } catch (Exception e) {
+            log.error("[CFO] News outcome enrichment failed: {}", e.getMessage());
         }
     }
 

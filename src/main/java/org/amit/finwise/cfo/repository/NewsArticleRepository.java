@@ -28,6 +28,9 @@ public interface NewsArticleRepository extends JpaRepository<NewsArticle, Long> 
     @Query("SELECT n.url FROM NewsArticle n WHERE n.url IN :urls")
     List<String> findExistingUrlsIn(@Param("urls") List<String> urls);
 
+    /** All articles attached to one event cluster (DF-6). */
+    List<NewsArticle> findByClusterId(Long clusterId);
+
     // ── Queries for personalized scoring ─────────────────────────────────────
 
     /**

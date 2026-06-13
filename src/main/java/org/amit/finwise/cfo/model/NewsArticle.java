@@ -12,7 +12,8 @@ import java.time.LocalDateTime;
     @Index(name = "idx_news_date",        columnList = "published_date DESC"),
     @Index(name = "idx_news_relevance",   columnList = "relevance_score DESC"),
     @Index(name = "idx_news_source",      columnList = "source"),
-    @Index(name = "idx_news_actionable",  columnList = "actionability_score DESC")
+    @Index(name = "idx_news_actionable",  columnList = "actionability_score DESC"),
+    @Index(name = "idx_news_cluster",     columnList = "cluster_id")
 })
 @Data
 @NoArgsConstructor
@@ -154,6 +155,22 @@ public class NewsArticle {
 
     @Column(name = "tier1_confidence")
     private double tier1Confidence;
+
+    // ── DF-6: event clustering ────────────────────────────────────────────────
+
+    /** The news_cluster this article belongs to (its deduplicated event). */
+    @Column(name = "cluster_id")
+    private Long clusterId;
+
+    /**
+     * True when this article was attached to a pre-existing cluster at ingest
+     * (embedding cosine >= 0.92 against the last 72h). Duplicates are excluded
+     * from LLM refinement so near-identical reports don't inflate sentiment or
+     * waste inference.
+     */
+    @Column(name = "cluster_duplicate")
+    @Builder.Default
+    private boolean clusterDuplicate = false;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)

@@ -12,6 +12,7 @@ import org.springframework.web.client.RestClient;
 
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Generates and stores article embeddings using Ollama's nomic-embed-text model,
@@ -195,6 +196,109 @@ public class EmbeddingService {
             return List.of();
         }
     }
+
+    /** Whether pgvector-backed features are usable (embeddings, dedup, retrieval). */
+    public boolean isAvailable() {
+        return pgvectorAvailable;
+    }
+
+    // ── DF-6: synchronous embed + dedup + cluster retrieval ────────────────────
+
+    /**
+     * Synchronously embed an article's text (document mode). Returns null when
+     * pgvector/Ollama is unavailable. Used at ingest by the clustering pipeline,
+     * which needs the vector before deciding the cluster (unlike the async path).
+     */
+    public float[] embedDocument(String title, String summary) {
+        if (!pgvectorAvailable) return null;
+        String text = DOC_PREFIX + (title != null ? title : "")
+                + (summary != null && !summary.isBlank() ? ". " + summary : "");
+        if (text.length() > MAX_EMBED_CHARS) text = text.substring(0, MAX_EMBED_CHARS);
+        try {
+            return callEmbeddingApi(text);
+        } catch (Exception e) {
+            log.warn("Synchronous embed failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Persist an article embedding (public entry point for the clustering pipeline). */
+    public void storeEmbedding(Long articleId, float[] embedding) {
+        if (!pgvectorAvailable || embedding == null) return;
+        store(articleId, embedding);
+    }
+
+    /**
+     * Find the single most-similar recent article to the given embedding, within
+     * the last {@code hours}. Used for ingest-time dedup: a match above the
+     * caller's cosine threshold means "same event, attach to its cluster".
+     */
+    public Optional<RecentMatch> findMostSimilarWithin(float[] embedding, int hours,
+                                                       double minSimilarity) {
+        if (!pgvectorAvailable || embedding == null) return Optional.empty();
+        String vectorStr = toVectorString(embedding);
+        try {
+            List<RecentMatch> hits = jdbc.query("""
+                    SELECT a.id, a.cluster_id, 1 - (e.embedding <=> ?::vector) AS similarity
+                    FROM cfo_news_embeddings e
+                    JOIN cfo_news_articles a ON a.id = e.article_id
+                    WHERE e.created_at >= NOW() - make_interval(hours => ?)
+                    ORDER BY e.embedding <=> ?::vector
+                    LIMIT 1
+                    """,
+                    (rs, n) -> new RecentMatch(
+                            rs.getLong("id"),
+                            (Long) rs.getObject("cluster_id"),
+                            rs.getDouble("similarity")),
+                    vectorStr, hours, vectorStr);
+            return hits.stream()
+                    .filter(m -> m.similarity() >= minSimilarity)
+                    .findFirst();
+        } catch (Exception e) {
+            log.debug("Dedup similarity search skipped: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Retrieve the most semantically-similar event clusters to a query — the
+     * vector half of evidence-pack retrieval. Matches against canonical-article
+     * embeddings so each cluster is represented once.
+     */
+    public List<ClusterMatch> findSimilarClusters(String queryText, int sinceDays, int limit) {
+        if (!pgvectorAvailable) return List.of();
+        String q = QUERY_PREFIX + (queryText != null ? queryText : "");
+        if (q.length() > MAX_EMBED_CHARS) q = q.substring(0, MAX_EMBED_CHARS);
+        try {
+            String vectorStr = toVectorString(callEmbeddingApi(q));
+            return jdbc.query("""
+                    SELECT c.id AS cluster_id, c.title, c.first_seen,
+                           1 - (e.embedding <=> ?::vector) AS similarity
+                    FROM cfo_news_cluster c
+                    JOIN cfo_news_embeddings e ON e.article_id = c.canonical_article_id
+                    WHERE c.first_seen >= NOW() - make_interval(days => ?)
+                    ORDER BY e.embedding <=> ?::vector
+                    LIMIT ?
+                    """,
+                    (rs, n) -> new ClusterMatch(
+                            rs.getLong("cluster_id"),
+                            rs.getString("title"),
+                            rs.getTimestamp("first_seen") != null
+                                    ? rs.getTimestamp("first_seen").toLocalDateTime() : null,
+                            rs.getDouble("similarity")),
+                    vectorStr, sinceDays, vectorStr, limit);
+        } catch (Exception e) {
+            log.debug("Cluster similarity search skipped: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** A recent article matched during ingest-time dedup. */
+    public record RecentMatch(Long articleId, Long clusterId, double similarity) {}
+
+    /** A candidate event cluster from vector retrieval. */
+    public record ClusterMatch(Long clusterId, String title,
+                               java.time.LocalDateTime firstSeen, double similarity) {}
 
     // ── Ollama embedding API ──────────────────────────────────────────────────
 

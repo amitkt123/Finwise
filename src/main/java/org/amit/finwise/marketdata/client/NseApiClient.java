@@ -71,6 +71,38 @@ public class NseApiClient {
                 "/companies-listing/corporate-filings-event-calendar");
     }
 
+    /** Corporate-announcements JSON for an [from, to] date range (equities). */
+    public Optional<String> fetchAnnouncements(LocalDate from, LocalDate to) {
+        String url = BASE + "/api/corporate-announcements?index=equities"
+                + "&from_date=" + DD_MM_YYYY.format(from)
+                + "&to_date=" + DD_MM_YYYY.format(to);
+        return getJson(url, "/companies-listing/corporate-filings-announcements");
+    }
+
+    /** Shareholding-pattern JSON for an [from, to] filing-date range (equities). */
+    public Optional<String> fetchShareholdingPatterns(LocalDate from, LocalDate to) {
+        String url = BASE + "/api/corporate-share-holdings-master?index=equities"
+                + "&from_date=" + DD_MM_YYYY.format(from)
+                + "&to_date=" + DD_MM_YYYY.format(to);
+        return getJson(url, "/companies-listing/corporate-filings-shareholding-pattern");
+    }
+
+    /** Bulk-deals JSON for an [from, to] date range. */
+    public Optional<String> fetchBulkDeals(LocalDate from, LocalDate to) {
+        String url = BASE + "/api/historical/bulk-deals"
+                + "?from=" + DD_MM_YYYY.format(from)
+                + "&to=" + DD_MM_YYYY.format(to);
+        return getJson(url, "/report-detail/display-bulk-and-block-deals");
+    }
+
+    /** Block-deals JSON for an [from, to] date range. */
+    public Optional<String> fetchBlockDeals(LocalDate from, LocalDate to) {
+        String url = BASE + "/api/historical/block-deals"
+                + "?from=" + DD_MM_YYYY.format(from)
+                + "&to=" + DD_MM_YYYY.format(to);
+        return getJson(url, "/report-detail/display-bulk-and-block-deals");
+    }
+
     private synchronized Optional<String> getJson(String url, String refererPath) {
         if (!warmedUp) warmUp();
         try {

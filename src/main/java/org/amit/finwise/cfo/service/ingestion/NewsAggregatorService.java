@@ -9,11 +9,10 @@ import org.amit.finwise.cfo.config.NewsProperties;
 import org.amit.finwise.cfo.model.NewsArticle;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
-import org.amit.finwise.cfo.service.EmbeddingService;
+import org.amit.finwise.cfo.service.rag.NewsClusteringService;
 import org.jsoup.Jsoup;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.io.InputStream;
 import java.io.StringReader;
@@ -43,15 +42,21 @@ public class NewsAggregatorService {
     private final NewsClassificationPipeline classificationPipeline;
     private final SymbolExtractorService symbolExtractorService;
     private final NewsProperties newsProperties;
-    private final EmbeddingService embeddingService;
+    private final NewsClusteringService newsClusteringService;
+
+    /** RSS feeds publish in IST; pin parsing so a server in another zone doesn't shift dates. */
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
 
     /**
      * Fetch all news sources and store with relevance ranking.
+     * <p>
+     * Not wrapped in a single transaction: each article is saved and clustered
+     * independently (the clustering step makes a synchronous Ollama embedding
+     * call, which must never hold a pooled DB connection open).
      */
-    @Transactional
     public int fetchAndStoreNews() {
         Set<String> userSymbols = getUserHoldingSymbols();
         int totalSaved = 0;
@@ -168,8 +173,8 @@ public class NewsAggregatorService {
                 }
 
                 LocalDate pubDate = entry.getPublishedDate() != null
-                        ? entry.getPublishedDate().toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-                        : LocalDate.now();
+                        ? entry.getPublishedDate().toInstant().atZone(IST).toLocalDate()
+                        : LocalDate.now(IST);
 
                 String title = entry.getTitle() != null ? entry.getTitle() : "";
                 String summary = entry.getDescription() != null ? entry.getDescription().getValue() : "";
@@ -178,14 +183,13 @@ public class NewsAggregatorService {
 
                 NewsArticle article = buildArticle(sourceName, title, summary, articleUrl,
                         pubDate, entry.getPublishedDate() != null
-                                ? entry.getPublishedDate().toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime()
-                                : LocalDateTime.now(),
+                                ? entry.getPublishedDate().toInstant().atZone(IST).toLocalDateTime()
+                                : LocalDateTime.now(IST),
                         category, userSymbols);
 
                 NewsArticle savedArticle = newsArticleRepository.save(article);
-                // Generate embedding asynchronously — does not block the fetch cycle
-                embeddingService.generateAndStore(savedArticle.getId(),
-                        savedArticle.getTitle(), savedArticle.getSummary());
+                // Embed + dedup into an event cluster, and write knowledge-graph edges (DF-6).
+                newsClusteringService.cluster(savedArticle);
                 saved++;
                 count++;
             }
@@ -232,8 +236,11 @@ public class NewsAggregatorService {
                 if (title.isBlank() || url.isBlank() || alreadyStored.contains(url)) continue;
 
                 NewsArticle article = buildArticle(sourceName, title, "", url,
-                        LocalDate.now(), LocalDateTime.now(), category, userSymbols);
-                newsArticleRepository.save(article);
+                        LocalDate.now(IST), LocalDateTime.now(IST), category, userSymbols);
+                NewsArticle savedArticle = newsArticleRepository.save(article);
+                // HTML-scraped articles were previously invisible to RAG (no embedding);
+                // route them through clustering so they get embedded + deduped too (DF-6).
+                newsClusteringService.cluster(savedArticle);
                 saved++;
             }
             return saved;

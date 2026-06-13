@@ -53,12 +53,29 @@ public class OllamaProvider implements LLMProvider {
     }
 
     @Override
+    public String chatJson(String systemPrompt, String userMessage) {
+        return chatInternal(List.of(
+                LLMMessage.system(systemPrompt),
+                LLMMessage.user(userMessage)
+        ), true);
+    }
+
+    @Override
     public String chatWithHistory(List<LLMMessage> messages) {
+        return chatInternal(messages, false);
+    }
+
+    /**
+     * @param jsonFormat when true, sets Ollama's {@code format: "json"} so the
+     *                   model is constrained to emit a single valid JSON value —
+     *                   replacing brittle regex recovery on the caller side.
+     */
+    private String chatInternal(List<LLMMessage> messages, boolean jsonFormat) {
         List<Map<String, String>> ollamaMessages = messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList();
 
-        Map<String, Object> requestBody = Map.of(
+        Map<String, Object> requestBody = new java.util.HashMap<>(Map.of(
                 "model", model,
                 "messages", ollamaMessages,
                 "stream", false,
@@ -66,7 +83,10 @@ public class OllamaProvider implements LLMProvider {
                         "temperature", temperature,
                         "num_predict", maxTokens
                 )
-        );
+        ));
+        if (jsonFormat) {
+            requestBody.put("format", "json");
+        }
 
         long totalPromptLength = messages.stream().mapToLong(m -> m.content().length()).sum();
         log.info("Sending request to Ollama: model={}, messageCount={}, totalPromptLength={}, temperature={}, maxTokens={}",

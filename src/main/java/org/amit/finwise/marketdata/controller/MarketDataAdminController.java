@@ -11,7 +11,9 @@ import org.amit.finwise.marketdata.repository.PriceAdjustmentRepository;
 import org.amit.finwise.marketdata.service.CorporateActionService;
 import org.amit.finwise.marketdata.service.CorporateEventService;
 import org.amit.finwise.marketdata.service.EodIngestionService;
+import org.amit.finwise.marketdata.service.FilingsService;
 import org.amit.finwise.marketdata.service.MarketDataSeedService;
+import org.amit.finwise.marketdata.service.MfNavService;
 import org.amit.finwise.marketdata.service.PriceAdjustmentService;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
@@ -44,6 +46,8 @@ public class MarketDataAdminController {
     private final CorporateActionService corporateActionService;
     private final CorporateEventService corporateEventService;
     private final PriceAdjustmentService priceAdjustmentService;
+    private final org.amit.finwise.marketdata.service.MfNavService mfNavService;
+    private final org.amit.finwise.marketdata.service.FilingsService filingsService;
     private final InstrumentRepository instrumentRepo;
     private final EodPriceRepository eodRepo;
     private final IngestionRunRepository runRepo;
@@ -143,6 +147,65 @@ public class MarketDataAdminController {
         CorporateEventService.ImportResult r =
                 corporateEventService.importEarningsHistory(Path.of(path));
         return Map.of("status", r.status(), "rows", r.rows(), "message", r.message());
+    }
+
+    // ── AMFI mutual-fund NAVs (DF-4) ────────────────────────────────────────
+
+    @PostMapping("/mf-nav/ingest")
+    public Map<String, Object> ingestMfNav() {
+        MfNavService.IngestResult r = mfNavService.ingestDailyNavAll(true);
+        return Map.of("status", r.status(), "rows", r.rows());
+    }
+
+    @PostMapping("/mf-nav/seed")
+    public ResponseEntity<Map<String, Object>> seedMfNav(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(required = false) java.util.List<String> tiers) {
+        LocalDate end = to != null ? to : LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        if (!mfNavService.startHistorySeed(from, end, tiers)) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(mfNavService.seedStatusView());
+        }
+        return ResponseEntity.accepted().body(mfNavService.seedStatusView());
+    }
+
+    @PostMapping("/mf-nav/seed/stop")
+    public Map<String, Object> stopMfNavSeed() {
+        mfNavService.requestStop();
+        return mfNavService.seedStatusView();
+    }
+
+    @GetMapping("/mf-nav/seed/status")
+    public Map<String, Object> mfNavSeedStatus() {
+        return mfNavService.seedStatusView();
+    }
+
+    // ── Filings: announcements / shareholding / deals (DF-4) ─────────────────
+
+    @PostMapping("/filings/announcements")
+    public Map<String, Object> ingestAnnouncements(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        FilingsService.IngestResult r = filingsService.ingestAnnouncements(from, to);
+        return Map.of("status", r.status(), "rows", r.rows());
+    }
+
+    @PostMapping("/filings/shareholding")
+    public Map<String, Object> ingestShareholding(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        FilingsService.IngestResult r = filingsService.ingestShareholding(from, to);
+        return Map.of("status", r.status(), "rows", r.rows());
+    }
+
+    @PostMapping("/filings/deals")
+    public Map<String, Object> ingestDeals(
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        java.util.List<FilingsService.IngestResult> results = filingsService.ingestDeals(from, to);
+        return Map.of(
+                "bulk", Map.of("status", results.get(0).status(), "rows", results.get(0).rows()),
+                "block", Map.of("status", results.get(1).status(), "rows", results.get(1).rows()));
     }
 
     @GetMapping("/quality")
