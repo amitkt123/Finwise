@@ -50,6 +50,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class LlmRefinementService {
 
+    /** DF-7: refinement/classification runs on local Ollama (bound by purpose). */
+    @org.springframework.beans.factory.annotation.Qualifier("refinementLlmProvider")
     private final LLMProvider llmProvider;
     private final NewsArticleRepository newsArticleRepository;
     private final InvestmentRepository investmentRepository;

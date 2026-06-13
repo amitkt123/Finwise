@@ -56,7 +56,12 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class CFOAdvisorService {
 
+    /** DF-7: briefs run on the strong API model (bound by purpose). */
+    @org.springframework.beans.factory.annotation.Qualifier("briefLlmProvider")
     private final LLMProvider llmProvider;
+    private final ContextAssemblyService contextAssemblyService;
+    private final org.amit.finwise.cfo.service.rag.EvidencePackService evidencePackService;
+    private final InsightEvaluationService insightEvaluationService;
     private final UserProfileRepository userProfileRepository;
     private final PortfolioSnapshotRepository snapshotRepository;
     private final TransactionRepository transactionRepository;
@@ -159,7 +164,7 @@ public class CFOAdvisorService {
                     existing.get().getCreatedAt());
         }
 
-        String context = buildDailyBriefContext(userId);
+        String context = buildBudgetedBriefContext(userId);
         String userPrompt = """
                 Generate my daily CFO morning brief for %s.
                 Include:
@@ -194,7 +199,10 @@ public class CFOAdvisorService {
                 .modelUsed(llmProvider.providerName())
                 .build();
 
-        return insightRepository.save(insight);
+        AiInsight saved = insightRepository.save(insight);
+        // DF-7: register the brief's actionable claims for the nightly scoreboard.
+        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        return saved;
     }
 
     // ── After-Hours Insights ──────────────────────────────────────────────────
@@ -234,7 +242,9 @@ public class CFOAdvisorService {
                 .modelUsed(llmProvider.providerName())
                 .build();
 
-        return insightRepository.save(insight);
+        AiInsight saved = insightRepository.save(insight);
+        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        return saved;
     }
 
     // ── Mid-Day / Post-Close Market Insight ──────────────────────────────────
@@ -285,7 +295,9 @@ public class CFOAdvisorService {
                 .modelUsed(llmProvider.providerName())
                 .build();
 
-        return insightRepository.save(insight);
+        AiInsight saved = insightRepository.save(insight);
+        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        return saved;
     }
 
     // ── Goal Advice ────────────────────────────────────────────────────────────
@@ -559,6 +571,87 @@ public class CFOAdvisorService {
         appendTodaysNews(ctx, userId, 10);
 
         return ctx.toString();
+    }
+
+    /**
+     * DF-7 budget-aware variant of {@link #buildDailyBriefContext}. Builds each
+     * logical block as a named, priority-ranked {@link ContextAssemblyService.Section}
+     * (risk → movers → evidence packs → news → goals), then lets the assembler
+     * truncate deterministically to the brief provider's token budget. Reuses the
+     * existing {@code append*} renderers — the LLM still does zero data work.
+     */
+    private String buildBudgetedBriefContext(String userId) {
+        java.util.Set<String> symbols = portfolioSymbols(userId);
+
+        List<ContextAssemblyService.Section> sections = List.of(
+                // P1 — risk first: it must never be the section that gets dropped.
+                ContextAssemblyService.section("risk", section(sb -> {
+                    appendMarketContextSummary(sb, userId);
+                    appendQuantRiskDecomposition(sb, userId);
+                    appendFactorRiskReport(sb, userId);
+                    appendLookThrough(sb, userId);
+                    appendAttribution(sb, userId);
+                    appendNewsSentimentRisk(sb, userId);
+                    appendSectorRiskMap(sb, userId);
+                }), 3000),
+                // P2 — movers: snapshot, holdings, price trends, recent trades.
+                ContextAssemblyService.section("movers", section(sb -> {
+                    appendPortfolioSnapshot(sb, userId);
+                    appendPortfolioHoldings(sb, userId);
+                    appendRecentPriceTrends(sb, userId, 5);
+                    appendRecentTransactions(sb, userId, 7);
+                }), 3000),
+                // P3 — evidence packs: realized outcomes of historically similar events.
+                ContextAssemblyService.section("evidence", section(sb ->
+                        appendEvidencePacks(sb, userId, symbols)), 1500),
+                // P4 — news + policy intelligence.
+                ContextAssemblyService.section("news", section(sb -> {
+                    appendPolicyIntelligenceContext(sb, userId, null, 6);
+                    appendTodaysNews(sb, userId, 10);
+                }), 2500),
+                // P5 — goals, profile, tax planning (first to yield under pressure).
+                ContextAssemblyService.section("goals", section(sb -> {
+                    appendUserProfile(sb, userId);
+                    appendActiveGoals(sb, userId);
+                    appendTaxPlanning(sb, userId);
+                }), 1500));
+
+        return contextAssemblyService.assemble(sections, llmProvider.providerName());
+    }
+
+    /** Render one section body via an existing {@code append*} helper. */
+    private String section(java.util.function.Consumer<StringBuilder> filler) {
+        StringBuilder sb = new StringBuilder();
+        filler.accept(sb);
+        return sb.toString();
+    }
+
+    /** Active equity holding symbols (upper-cased) — the portfolio entity set. */
+    private java.util.Set<String> portfolioSymbols(String userId) {
+        return investmentRepository.findActiveInvestments(userId).stream()
+                .map(Investment::getSymbol)
+                .filter(s -> s != null && !s.isBlank())
+                .map(String::toUpperCase)
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+    }
+
+    /**
+     * DF-7: pull outcome-linked evidence packs (DF-6) keyed on the portfolio's
+     * holdings and today's headlines, so the brief can ground claims in realized
+     * "similar event → these stocks moved X% excess over Nd" history.
+     */
+    private void appendEvidencePacks(StringBuilder ctx, String userId, java.util.Set<String> symbols) {
+        StringBuilder query = new StringBuilder(String.join(" ", symbols));
+        newsArticleRepository.findRecentByRelevance(LocalDate.now().minusDays(2))
+                .stream().limit(5)
+                .forEach(a -> { if (a.getTitle() != null) query.append(' ').append(a.getTitle()); });
+        if (query.toString().isBlank()) return;
+
+        String packs = evidencePackService.retrieveAsText(query.toString(), symbols, 5);
+        if (packs.isBlank()) return;
+        ctx.append("## Evidence Packs — Realized Outcomes of Similar Past Events\n");
+        ctx.append("(historical reactions; ground forward-looking claims in these, do not extrapolate blindly)\n");
+        ctx.append(packs).append("\n\n");
     }
 
     private String buildAfterHoursContext(String userId) {

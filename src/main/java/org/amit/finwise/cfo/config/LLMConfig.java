@@ -52,14 +52,54 @@ public class LLMConfig {
     @Value("${cfo.llm.google.temperature:0.3}")
     private float googleTemperature;
 
+    // ── DF-7 split provider routing ──────────────────────────────────────────
+    // Briefs are inference-heavy and customer-facing → a strong API model.
+    // Refinement/embeddings are high-volume, low-stakes → local Ollama.
+    // Both default to the single `cfo.llm.provider` so existing single-provider
+    // setups keep working unchanged; override per-purpose to split them.
+
+    @Value("${cfo.llm.brief.provider:${cfo.llm.provider:ollama}}")
+    private String briefProvider;
+
+    @Value("${cfo.llm.refinement.provider:ollama}")
+    private String refinementProvider;
+
+    /**
+     * Default provider (selected by {@code cfo.llm.provider}). Marked {@link Primary}
+     * so any injection point that does not qualify still resolves unambiguously now
+     * that two more {@link LLMProvider} beans exist.
+     */
     @Bean
+    @Primary
     public LLMProvider llmProvider() {
-        return switch (provider.toLowerCase()) {
+        return buildProvider(provider);
+    }
+
+    /**
+     * DF-7: strong-model provider bound for daily/after-hours briefs.
+     * Injected via {@code @Qualifier("briefLlmProvider")}.
+     */
+    @Bean(name = "briefLlmProvider")
+    public LLMProvider briefLlmProvider() {
+        return buildProvider(briefProvider);
+    }
+
+    /**
+     * DF-7: Ollama-by-default provider bound for news refinement/classification.
+     * Injected via {@code @Qualifier("refinementLlmProvider")}.
+     */
+    @Bean(name = "refinementLlmProvider")
+    public LLMProvider refinementLlmProvider() {
+        return buildProvider(refinementProvider);
+    }
+
+    private LLMProvider buildProvider(String name) {
+        return switch (name.toLowerCase()) {
             case "ollama" -> new OllamaProvider(ollamaBaseUrl, ollamaModel, ollamaTemperature, ollamaMaxTokens);
             case "claude" -> new ClaudeProvider(claudeApiKey, claudeModel, ollamaMaxTokens);
             case "openai" -> new OpenAIProvider(openAiApiKey, openAiModel, ollamaMaxTokens);
             case "google" -> new GoogleAIProvider(googleApiKey, googleModel, googleTemperature, ollamaMaxTokens);
-            default -> throw new IllegalArgumentException("Unknown LLM provider: " + provider);
+            default -> throw new IllegalArgumentException("Unknown LLM provider: " + name);
         };
     }
 

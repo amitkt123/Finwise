@@ -37,6 +37,8 @@ public class IngestionRun {
     public static final String JOB_BLOCK_DEAL = "block_deal";
     // DF-6 — outcome-linked news RAG
     public static final String JOB_NEWS_OUTCOME = "news_outcome";
+    // DF-7 — insight evaluation / calibration loop
+    public static final String JOB_INSIGHT_EVAL = "insight_eval";
 
     /**
      * Jobs whose freshness is tracked by the gap-repair / data-quality layer (DF-5).
@@ -51,7 +53,7 @@ public class IngestionRun {
     public static final String[] ALL_JOBS = {
             JOB_BHAVCOPY, JOB_INDEX_CLOSE, JOB_DELIVERY, JOB_CORPORATE_ACTION,
             JOB_EVENT_CALENDAR, JOB_AMFI_NAV, JOB_ANNOUNCEMENT, JOB_SHAREHOLDING,
-            JOB_BULK_DEAL, JOB_BLOCK_DEAL, JOB_NEWS_OUTCOME
+            JOB_BULK_DEAL, JOB_BLOCK_DEAL, JOB_NEWS_OUTCOME, JOB_INSIGHT_EVAL
     };
 
     /** Critical jobs — a sustained failure here triggers an email alert (DF-5). */

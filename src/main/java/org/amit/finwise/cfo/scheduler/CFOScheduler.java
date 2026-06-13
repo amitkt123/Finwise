@@ -37,6 +37,7 @@ public class CFOScheduler {
     private final MacroSeriesService macroSeriesService;
     private final org.amit.finwise.cfo.service.research.PeerUniverseService peerUniverseService;
     private final org.amit.finwise.cfo.service.rag.EventOutcomeService eventOutcomeService;
+    private final org.amit.finwise.cfo.service.InsightEvaluationService insightEvaluationService;
     private final org.amit.finwise.cfo.config.FactorProperties factorProperties;
 
     @Value("${cfo.user.id}")
@@ -308,6 +309,26 @@ public class CFOScheduler {
                     result.clustersScanned(), result.outcomesWritten());
         } catch (Exception e) {
             log.error("[CFO] News outcome enrichment failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Nightly 23:30 IST — DF-7 insight evaluation loop. Runs after outcome
+     * enrichment (23:00) so the day's fresh prices are available: scores every
+     * matured brief claim against realized excess returns and logs the
+     * calibration scoreboard per provider/prompt-version.
+     */
+    @Scheduled(cron = "${cfo.eval.score-cron:0 30 23 * * *}", zone = "Asia/Kolkata")
+    public void scoreInsightClaims() {
+        log.info("[CFO] Scoring insight claims...");
+        try {
+            var result = insightEvaluationService.scoreMaturedClaims();
+            log.info("[CFO] Insight scoring: {} pending, {} scored, {} abandoned",
+                    result.scanned(), result.scored(), result.abandoned());
+            insightEvaluationService.calibrationReport(90)
+                    .forEach(row -> log.info("[CFO][calibration] {}", row.render()));
+        } catch (Exception e) {
+            log.error("[CFO] Insight scoring failed: {}", e.getMessage());
         }
     }
 
