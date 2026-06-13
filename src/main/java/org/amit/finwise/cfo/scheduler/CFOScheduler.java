@@ -11,6 +11,7 @@ import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
+import org.amit.finwise.cfo.service.macro.MacroSeriesService;
 import org.amit.finwise.cfo.service.macro.MacroStateService;
 import org.amit.finwise.cfo.service.notification.EmailNotificationService;
 import org.springframework.beans.factory.annotation.Value;
@@ -33,6 +34,7 @@ public class CFOScheduler {
     private final StockPriceService stockPriceService;
     private final MarketContextService marketContextService;
     private final MacroStateService macroStateService;
+    private final MacroSeriesService macroSeriesService;
     private final org.amit.finwise.cfo.service.research.PeerUniverseService peerUniverseService;
     private final org.amit.finwise.cfo.config.FactorProperties factorProperties;
 
@@ -222,13 +224,16 @@ public class CFOScheduler {
     // ── Macro State (Phase 5) ────────────────────────────────────────────
 
     /**
-     * 5:00 PM IST — Refresh macro snapshot after market close.
-     * Fetches USD/INR, India VIX, and merges with config-based repo rate / CPI / G-sec yield.
+     * 5:00 PM IST — Refresh macro state after market close.
+     * First ingests the daily macro_series feeds (FBIL G-sec curve + USD/INR,
+     * RBI policy rates, India VIX from the index file), then assembles the
+     * snapshot from macro_series (DF-3).
      */
     @Scheduled(cron = "0 0 17 * * MON-FRI", zone = "Asia/Kolkata")
     public void refreshMacroState() {
         log.info("[CFO] Refreshing macro state snapshot...");
         try {
+            macroSeriesService.ingestDaily();
             org.amit.finwise.cfo.model.MacroSnapshot snapshot = macroStateService.fetchAndPersistDaily();
             log.info("[CFO] Macro snapshot updated: repo={}, CPI={}, USD/INR={}, VIX={}",
                     snapshot.getRepoRate(),
@@ -237,6 +242,23 @@ public class CFOScheduler {
                     snapshot.getIndiaVix());
         } catch (Exception e) {
             log.error("[CFO] Macro state refresh failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Monthly — pull MOSPI CPI/IIP/WPI history from data.gov.in into macro_series.
+     * One call seeds 3y+ and refreshes the latest print; runs on the 15th
+     * (after the mid-month CPI/IIP releases) at 18:00 IST.
+     */
+    @Scheduled(cron = "0 0 18 15 * *", zone = "Asia/Kolkata")
+    public void refreshMacroMonthly() {
+        log.info("[CFO] Refreshing monthly MOSPI macro series...");
+        try {
+            MacroSeriesService.IngestResult r = macroSeriesService.ingestMonthly();
+            log.info("[CFO] MOSPI ingest: {} observations across {} series",
+                    r.observations(), r.seriesTouched());
+        } catch (Exception e) {
+            log.error("[CFO] Monthly MOSPI refresh failed: {}", e.getMessage());
         }
     }
 

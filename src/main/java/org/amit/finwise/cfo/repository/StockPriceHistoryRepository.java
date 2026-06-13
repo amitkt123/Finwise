@@ -29,6 +29,9 @@ public interface StockPriceHistoryRepository extends JpaRepository<StockPriceHis
 
     boolean existsBySymbolAndPriceDate(String symbol, LocalDate priceDate);
 
+    /** True if we hold any history for this symbol (cold-start detection) */
+    boolean existsBySymbol(String symbol);
+
     /** Nearest price entry at-or-before a date (grandfathering FMV lookup) */
     Optional<StockPriceHistory> findFirstBySymbolAndPriceDateLessThanEqualOrderByPriceDateDesc(
             String symbol, LocalDate priceDate);

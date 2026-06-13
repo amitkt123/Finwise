@@ -65,8 +65,10 @@ public class ReturnSeriesService {
                 StockPriceHistory curr = sorted.get(i);
                 StockPriceHistory prev = sorted.get(i - 1);
 
-                // Exclude points flagged as data anomalies
-                if (DataQualityFlag.SUSPECT_GAP.equals(curr.getDataQualityFlag())) continue;
+                // Exclude points whose one-day return is spurious: unexplained gaps and
+                // corporate-action level shifts (split/bonus ex-dates) alike.
+                DataQualityFlag flag = curr.getDataQualityFlag();
+                if (flag != null && flag.isExcludedFromReturns()) continue;
 
                 BigDecimal currPrice = curr.getAdjustedClose() != null
                         ? curr.getAdjustedClose() : curr.getClosePrice();

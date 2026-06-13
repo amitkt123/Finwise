@@ -1,0 +1,122 @@
+[
+ {
+  "id": 18071914,
+  "date": "2022-04-25",
+  "stock_name": "Muthoot Finance Ltd.",
+  "trading_symbol": "MUTHOOTFIN",
+  "event_type": "dividend",
+  "price": 2111.6,
+  "price_change_percent": 1.4850771375018068,
+  "description": "Interim Dividend of ₹ 20 Per Share"
+ },
+ {
+  "id": 18071915,
+  "date": "2022-04-26",
+  "stock_name": "HDFC Life Insurance Co. Ltd.",
+  "trading_symbol": "HDFCLIFE",
+  "event_type": "stock_results",
+  "price": 720.05,
+  "price_change_percent": 0.5586202080860275,
+  "description": "Q4 2022"
+ },
+ {
+  "id": 18071916,
+  "date": "2022-04-27",
+  "stock_name": "ABB India Ltd.",
+  "trading_symbol": "ABB",
+  "event_type": "dividend",
+  "price": 5571.5,
+  "price_change_percent": 3.5691049354029185,
+  "description": "Dividend of ₹ 5.20 Per Share"
+ },
+ {
+  "id": 18071917,
+  "date": "2022-04-28",
+  "stock_name": "HCL Technologies Ltd.",
+  "trading_symbol": "HCLTECH",
+  "event_type": "dividend",
+  "price": 1438.0,
+  "price_change_percent": 0.4400363204581934,
+  "description": "Interim Dividend of ₹ 18 Per Share"
+ },
+ {
+  "id": 18071918,
+  "date": "2022-04-28",
+  "stock_name": "Ambuja Cements Ltd.",
+  "trading_symbol": "AMBUJACEM",
+  "event_type": "stock_results",
+  "price": 569.8,
+  "price_change_percent": 0.7158638974812116,
+  "description": "Q4 2022"
+ },
+ {
+  "id": 18071919,
+  "date": "2022-04-28",
+  "stock_name": "Biocon Ltd.",
+  "trading_symbol": "BIOCON",
+  "event_type": "stock_results",
+  "price": 331.3,
+  "price_change_percent": 0.6531976302597704,
+  "description": "Q4 2022"
+ },
+ {
+  "id": 18071977,
+  "date": "2022-06-09",
+  "stock_name": "AU Small Finance Bank Ltd.",
+  "trading_symbol": "AUBANK",
+  "event_type": "bonus",
+  "price": 586.55,
+  "price_change_percent": 0.7212157637159667,
+  "description": "Bonus Ratio 1:1"
+ },
+ {
+  "id": 18072000,
+  "date": "2022-06-30",
+  "stock_name": "Indian Oil Corp. Ltd.",
+  "trading_symbol": "IOC",
+  "event_type": "bonus",
+  "price": 134.3,
+  "price_change_percent": 0.3511918105058648,
+  "description": "Bonus Ratio 1:2"
+ },
+ {
+  "id": 18072016,
+  "date": "2022-07-08",
+  "stock_name": "Torrent Pharmaceuticals Ltd.",
+  "trading_symbol": "TORNTPHARM",
+  "event_type": "bonus",
+  "price": 3254.8,
+  "price_change_percent": 0.9960592050144401,
+  "description": "Bonus Ratio 1:1"
+ },
+ {
+  "id": 18072112,
+  "date": "2022-07-28",
+  "stock_name": "Tata Steel Ltd.",
+  "trading_symbol": "TATASTEEL",
+  "event_type": "stock_split",
+  "price": 137.14,
+  "price_change_percent": 0.12411476965758012,
+  "description": "Split Ratio 1:10"
+ },
+ {
+  "id": 18072259,
+  "date": "2022-09-13",
+  "stock_name": "Bajaj Finserv Ltd.",
+  "trading_symbol": "BAJAJFINSV",
+  "event_type": "stock_split",
+  "price": 2035.3,
+  "price_change_percent": 3.3566930733292657,
+  "description": "Split Ratio 1:5"
+ },
+ {
+  "id": 18073167,
+  "date": "2023-09-28",
+  "stock_name": "Hindustan Aeronautics Ltd.",
+  "trading_symbol": "HAL",
+  "event_type": "stock_split",
+  "price": 4220.4,
+  "price_change_percent": 0.26608381640216233,
+  "description": "Split Ratio 5:10"
+ }
+]

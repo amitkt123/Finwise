@@ -12,6 +12,7 @@ import org.amit.finwise.cfo.service.price.PriceDataProvider.DailyPrice;
 import org.amit.finwise.cfo.service.price.PriceDataProvider.PriceProviderException;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.amit.finwise.marketdata.repository.CorporateActionRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,8 +21,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Fetches and persists daily OHLCV price history for all active portfolio stocks.
@@ -48,10 +51,14 @@ public class StockPriceService {
     private final StockPriceHistoryRepository priceRepo;
     private final InvestmentRepository investmentRepo;
     private final PortfolioSnapshotRepository snapshotRepo;
+    private final CorporateActionRepository corporateActionRepo;
     private final List<PriceDataProvider> providers; // injected in priority order by PriceProviderConfig
 
     @Value("${cfo.price.history-days:30}")
     private int historyDays;
+
+    @Value("${cfo.price.cold-start-days:730}")
+    private int coldStartDays;
 
     @Value("${cfo.price.inter-symbol-delay-ms:500}")
     private long interSymbolDelayMs;
@@ -61,12 +68,31 @@ public class StockPriceService {
     // We use ±9.5% as a conservative proxy (catches ±10% and above)
     private static final double CIRCUIT_THRESHOLD_PERCENT = 9.5;
 
-    // A raw-close drop beyond this threshold is treated as a corporate-action artifact
-    // (e.g. 1:5 split ≈ -80%) and flagged SUSPECT_GAP rather than a real lower circuit
-    private static final double SPLIT_SUSPECT_THRESHOLD_PERCENT = -70.0;
+    // A move this large in magnitude is bigger than any NSE circuit band (max ±20%),
+    // so it is almost always a corporate action or a data error rather than real trading.
+    // On a known ex-date it is EXPECTED_CORPORATE_ACTION; otherwise SUSPECT_GAP. This
+    // closes the old −9.5%..−70% hole where 1:2 splits (≈ −50%) slipped through as circuits.
+    private static final double LARGE_MOVE_THRESHOLD_PERCENT = 35.0;
 
     /** Yahoo Finance ticker for Nifty 50 index (no .NS suffix). */
     public static final String NIFTY_SYMBOL = "^NSEI";
+
+    /**
+     * Classifies a day-over-day move against the corporate-action calendar.
+     * A move larger than any circuit band ({@link #LARGE_MOVE_THRESHOLD_PERCENT})
+     * is a corporate action or a data error, not real trading: on a known ex-date
+     * it is an EXPECTED_CORPORATE_ACTION (level shift explained), otherwise a
+     * SUSPECT_GAP. Both are excluded from raw return series. Smaller moves are OK
+     * and left to the circuit-breaker heuristics.
+     */
+    static DataQualityFlag classifyMove(Double changePercent, LocalDate date, Set<LocalDate> exDates) {
+        if (changePercent == null || Math.abs(changePercent) < LARGE_MOVE_THRESHOLD_PERCENT) {
+            return DataQualityFlag.OK;
+        }
+        return exDates.contains(date)
+                ? DataQualityFlag.EXPECTED_CORPORATE_ACTION
+                : DataQualityFlag.SUSPECT_GAP;
+    }
 
     // ── Public API ────────────────────────────────────────────────────────────
 
@@ -237,8 +263,21 @@ public class StockPriceService {
      */
     @Transactional
     public int fetchAndPersistSymbol(String symbol) throws PriceProviderException {
-        List<DailyPrice> prices = fetchWithFallback(symbol);
+        // Cold start: a symbol we have never seen gets a deep backfill so the
+        // risk engine (365d) and factor model (>=120 obs) work immediately,
+        // instead of accumulating 30 days at a time for months.
+        List<DailyPrice> prices;
+        if (!priceRepo.existsBySymbol(symbol)) {
+            log.info("[PriceService] Cold start for symbol={}: backfilling {} days", symbol, coldStartDays);
+            prices = fetchWithFallbackOverride(symbol, coldStartDays);
+        } else {
+            prices = fetchWithFallback(symbol);
+        }
         if (prices.isEmpty()) return 0;
+
+        // Corporate-action ex-dates for this symbol — a large move ON one of these
+        // is an expected level shift (split/bonus), not a suspect gap.
+        Set<LocalDate> exDates = new HashSet<>(corporateActionRepo.findExDatesBySymbol(symbol));
 
         int saved = 0;
         for (int i = 0; i < prices.size(); i++) {
@@ -273,14 +312,13 @@ public class StockPriceService {
                 }
             }
 
-            // ── Data quality / split detection ────────────────────────────────────
-            // A raw-close drop beyond SPLIT_SUSPECT_THRESHOLD is almost certainly a
-            // corporate action (split / bonus), not a real lower-circuit day.
-            // Flag it as SUSPECT_GAP so return-series computation excludes this point.
-            DataQualityFlag qualityFlag = DataQualityFlag.OK;
-            if (changePercent != null && changePercent <= SPLIT_SUSPECT_THRESHOLD_PERCENT) {
-                qualityFlag = DataQualityFlag.SUSPECT_GAP;
-                log.warn("[PriceService] SUSPECT_GAP: symbol={}, date={}, rawChange={}% — possible split/adj error",
+            // ── Data quality / corporate-action detection ─────────────────────────
+            DataQualityFlag qualityFlag = classifyMove(changePercent, dp.date(), exDates);
+            if (qualityFlag == DataQualityFlag.EXPECTED_CORPORATE_ACTION) {
+                log.info("[PriceService] EXPECTED_CORPORATE_ACTION: symbol={}, date={}, rawChange={}% — on known ex-date",
+                        symbol, dp.date(), String.format("%.1f", changePercent));
+            } else if (qualityFlag == DataQualityFlag.SUSPECT_GAP) {
+                log.warn("[PriceService] SUSPECT_GAP: symbol={}, date={}, rawChange={}% — large move, no corporate action on file",
                         symbol, dp.date(), String.format("%.1f", changePercent));
             }
 

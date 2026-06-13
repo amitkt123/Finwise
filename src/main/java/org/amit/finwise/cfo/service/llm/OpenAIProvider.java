@@ -43,6 +43,18 @@ public class OpenAIProvider implements LLMProvider {
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList();
 
+        long totalPromptLength = messages.stream().mapToLong(m -> m.content().length()).sum();
+        log.info("Sending request to OpenAI: model={}, messageCount={}, totalPromptLength={}, maxTokens={}",
+                model, messages.size(), totalPromptLength, maxTokens);
+
+        for (int i = 0; i < messages.size(); i++) {
+            LLMMessage msg = messages.get(i);
+            String preview = msg.content().length() > 200
+                    ? msg.content().substring(0, 200) + "..."
+                    : msg.content();
+            log.debug("OpenAI message[{}] role={}: {}", i, msg.role(), preview);
+        }
+
         Map<String, Object> requestBody = Map.of(
                 "model", model,
                 "messages", openAiMessages,
@@ -50,6 +62,7 @@ public class OpenAIProvider implements LLMProvider {
         );
 
         try {
+            long startTime = System.currentTimeMillis();
             OpenAIResponse response = restClient.post()
                     .uri("/v1/chat/completions")
                     .body(requestBody)
@@ -57,8 +70,14 @@ public class OpenAIProvider implements LLMProvider {
                     .body(OpenAIResponse.class);
 
             if (response != null && response.choices() != null && !response.choices().isEmpty()) {
-                return response.choices().getFirst().message().content();
+                long duration = System.currentTimeMillis() - startTime;
+                String responseContent = response.choices().getFirst().message().content();
+                log.info("OpenAI response received: duration={}ms, responseLength={}", duration, responseContent.length());
+                log.debug("OpenAI response preview: {}",
+                        responseContent.length() > 200 ? responseContent.substring(0, 200) + "..." : responseContent);
+                return responseContent;
             }
+            log.warn("OpenAI returned empty or null response");
             return "I was unable to generate a response at this time.";
         } catch (Exception e) {
             log.error("OpenAI call failed: {}", e.getMessage());

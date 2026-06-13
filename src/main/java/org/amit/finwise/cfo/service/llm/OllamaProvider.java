@@ -68,7 +68,20 @@ public class OllamaProvider implements LLMProvider {
                 )
         );
 
+        long totalPromptLength = messages.stream().mapToLong(m -> m.content().length()).sum();
+        log.info("Sending request to Ollama: model={}, messageCount={}, totalPromptLength={}, temperature={}, maxTokens={}",
+                model, messages.size(), totalPromptLength, temperature, maxTokens);
+
+        for (int i = 0; i < messages.size(); i++) {
+            LLMMessage msg = messages.get(i);
+            String preview = msg.content().length() > 200
+                    ? msg.content().substring(0, 200) + "..."
+                    : msg.content();
+            log.debug("Ollama message[{}] role={}: {}", i, msg.role(), preview);
+        }
+
         try {
+            long startTime = System.currentTimeMillis();
             OllamaResponse response = restClient.post()
                     .uri("/api/chat")
                     .body(requestBody)
@@ -84,7 +97,13 @@ public class OllamaProvider implements LLMProvider {
                     .body(OllamaResponse.class);
 
             if (response != null && response.message() != null && response.message().content() != null) {
-                return response.message().content();
+                long duration = System.currentTimeMillis() - startTime;
+                String responseContent = response.message().content();
+                log.info("Ollama response received: duration={}ms, responseLength={}, done={}",
+                        duration, responseContent.length(), response.done());
+                log.debug("Ollama response preview: {}",
+                        responseContent.length() > 200 ? responseContent.substring(0, 200) + "..." : responseContent);
+                return responseContent;
             }
             log.warn("Ollama returned empty or null response");
             return "I was unable to generate a response at this time.";

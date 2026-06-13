@@ -47,7 +47,15 @@ public class ClaudeProvider implements LLMProvider {
         List<Map<String, Object>> systemBlocks = new ArrayList<>();
         List<Map<String, Object>> chatMessages = new ArrayList<>();
 
+        long totalPromptLength = 0;
+        int cacheableCount = 0;
+
         for (LLMMessage m : messages) {
+            totalPromptLength += m.content().length();
+            if (m.cacheable()) {
+                cacheableCount++;
+            }
+
             if ("system".equals(m.role())) {
                 // Build a content block for this system message
                 Map<String, Object> block = new HashMap<>();
@@ -79,6 +87,17 @@ public class ClaudeProvider implements LLMProvider {
             }
         }
 
+        log.info("Sending request to Claude: model={}, messageCount={}, totalPromptLength={}, maxTokens={}, cacheableMessages={}",
+                model, messages.size(), totalPromptLength, maxTokens, cacheableCount);
+
+        for (int i = 0; i < messages.size(); i++) {
+            LLMMessage msg = messages.get(i);
+            String preview = msg.content().length() > 200
+                    ? msg.content().substring(0, 200) + "..."
+                    : msg.content();
+            log.debug("Claude message[{}] role={} cacheable={}: {}", i, msg.role(), msg.cacheable(), preview);
+        }
+
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", model);
         requestBody.put("max_tokens", maxTokens);
@@ -93,6 +112,7 @@ public class ClaudeProvider implements LLMProvider {
         requestBody.put("messages", chatMessages);
 
         try {
+            long startTime = System.currentTimeMillis();
             ClaudeResponse response = restClient.post()
                     .uri("/v1/messages")
                     .body(requestBody)
@@ -100,8 +120,14 @@ public class ClaudeProvider implements LLMProvider {
                     .body(ClaudeResponse.class);
 
             if (response != null && response.content() != null && !response.content().isEmpty()) {
-                return response.content().getFirst().text();
+                long duration = System.currentTimeMillis() - startTime;
+                String responseContent = response.content().getFirst().text();
+                log.info("Claude response received: duration={}ms, responseLength={}", duration, responseContent.length());
+                log.debug("Claude response preview: {}",
+                        responseContent.length() > 200 ? responseContent.substring(0, 200) + "..." : responseContent);
+                return responseContent;
             }
+            log.warn("Claude returned empty or null response");
             return "I was unable to generate a response at this time.";
         } catch (Exception e) {
             log.error("Claude API call failed: {}", e.getMessage());

@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.config;
 import org.amit.finwise.cfo.service.llm.ClaudeProvider;
 import org.amit.finwise.cfo.service.llm.GoogleAIProvider;
 import org.amit.finwise.cfo.service.llm.LLMProvider;
+import org.amit.finwise.cfo.service.llm.OllamaProvider;
 import org.amit.finwise.cfo.service.llm.OpenAIProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -54,6 +55,7 @@ public class LLMConfig {
     @Bean
     public LLMProvider llmProvider() {
         return switch (provider.toLowerCase()) {
+            case "ollama" -> new OllamaProvider(ollamaBaseUrl, ollamaModel, ollamaTemperature, ollamaMaxTokens);
             case "claude" -> new ClaudeProvider(claudeApiKey, claudeModel, ollamaMaxTokens);
             case "openai" -> new OpenAIProvider(openAiApiKey, openAiModel, ollamaMaxTokens);
             case "google" -> new GoogleAIProvider(googleApiKey, googleModel, googleTemperature, ollamaMaxTokens);

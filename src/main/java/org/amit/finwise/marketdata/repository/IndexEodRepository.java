@@ -1,0 +1,17 @@
+package org.amit.finwise.marketdata.repository;
+
+import org.amit.finwise.marketdata.model.IndexEod;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Optional;
+
+public interface IndexEodRepository extends JpaRepository<IndexEod, Long> {
+
+    List<IndexEod> findByIndexNameAndTradeDateBetweenOrderByTradeDate(
+            String indexName, LocalDate from, LocalDate to);
+
+    /** Latest close for one index (e.g. "India VIX") — DF-3 sources VIX from the index file, not Yahoo. */
+    Optional<IndexEod> findTopByIndexNameIgnoreCaseOrderByTradeDateDesc(String indexName);
+}

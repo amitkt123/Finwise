@@ -63,6 +63,14 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
     @Override
     public String providerName() { return "yahoo-finance"; }
 
+    /**
+     * Maps an internal symbol to a Yahoo ticker. Indices (^NSEI) and FX pairs
+     * (USDINR=X) are already fully qualified; bare NSE equities get ".NS".
+     */
+    private static String toYahooTicker(String symbol) {
+        return (symbol.startsWith("^") || symbol.contains("=")) ? symbol : symbol + ".NS";
+    }
+
     @Override
     public boolean requiresApiKey() { return false; }
 
@@ -74,7 +82,7 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
      *   ?modules=defaultKeyStatistics,financialData,summaryDetail,incomeStatementHistory
      */
     public FundamentalsSnapshot fetchFundamentals(String symbol) throws PriceProviderException {
-        String yahooTicker = symbol.startsWith("^") ? symbol : symbol + ".NS";
+        String yahooTicker = toYahooTicker(symbol);
         try {
             return fetchFundamentalsSafe(yahooTicker, symbol);
         } catch (PriceProviderException primaryEx) {
@@ -113,7 +121,7 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
      * Yahoo serves ~4 trailing quarters; persistence accumulates to 8+ over time.
      */
     public List<QuarterlySnapshot> fetchQuarterlyFundamentals(String symbol) throws PriceProviderException {
-        String yahooTicker = symbol.startsWith("^") ? symbol : symbol + ".NS";
+        String yahooTicker = toYahooTicker(symbol);
         String url = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/" + yahooTicker
                 + "?modules=earnings,balanceSheetHistoryQuarterly,cashflowStatementHistoryQuarterly,incomeStatementHistoryQuarterly";
 
@@ -300,7 +308,7 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
     @Override
     public List<DailyPrice> fetchHistory(String symbol, int days) throws PriceProviderException {
         // Indices (e.g. ^NSEI) use their symbol directly; NSE equities get ".NS" suffix
-        String yahooTicker = symbol.startsWith("^") ? symbol : symbol + ".NS";
+        String yahooTicker = toYahooTicker(symbol);
         try {
             return fetch(PRIMARY_URL, yahooTicker, symbol, days);
         } catch (PriceProviderException primaryEx) {

@@ -4,8 +4,11 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatusCode;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
+
+import java.time.Duration;
 
 import java.util.List;
 import java.util.Map;
@@ -29,7 +32,12 @@ public class GoogleAIProvider implements LLMProvider {
             throw new IllegalArgumentException("Google AI API key must be configured via cfo.llm.google.api-key");
         }
 
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        factory.setConnectTimeout(Duration.ofSeconds(10));
+        factory.setReadTimeout(Duration.ofSeconds(120));
+
         this.restClient = RestClient.builder()
+                .requestFactory(factory)
                 .baseUrl("https://generativelanguage.googleapis.com/v1beta/models")
                 .defaultHeader("Content-Type", "application/json")
                 .defaultHeader("x-goog-api-key", apiKey)
@@ -53,6 +61,11 @@ public class GoogleAIProvider implements LLMProvider {
             try {
                 String combinedPrompt = buildPrompt(messages);
 
+                log.info("Sending request to Google AI: model={}, messageCount={}, promptLength={}, temperature={}, maxTokens={}",
+                        model, messages.size(), combinedPrompt.length(), temperature, maxTokens);
+                log.debug("Google AI prompt preview: {}",
+                        combinedPrompt.length() > 200 ? combinedPrompt.substring(0, 200) + "..." : combinedPrompt);
+
                 Map<String, Object> requestBody = Map.of(
                         "contents", List.of(
                                 Map.of("parts", List.of(Map.of("text", combinedPrompt)))
@@ -65,6 +78,7 @@ public class GoogleAIProvider implements LLMProvider {
 
                 String url = String.format("/%s:generateContent", model);
 
+                long startTime = System.currentTimeMillis();
                 GoogleAIResponse response = restClient.post()
                         .uri(url)
                         .body(requestBody)
@@ -79,7 +93,12 @@ public class GoogleAIProvider implements LLMProvider {
                         })
                         .body(GoogleAIResponse.class);
 
-                return extractText(response);
+                long duration = System.currentTimeMillis() - startTime;
+                String result = extractText(response);
+                log.info("Google AI response received: duration={}ms, responseLength={}", duration, result.length());
+                log.debug("Google AI response preview: {}",
+                        result.length() > 200 ? result.substring(0, 200) + "..." : result);
+                return result;
 
             } catch (HttpClientErrorException e) {
                 retryCount++;

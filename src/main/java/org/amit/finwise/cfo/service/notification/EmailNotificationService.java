@@ -17,7 +17,7 @@ import java.time.format.DateTimeFormatter;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class EmailNotificationService {
+public class   EmailNotificationService {
 
     private final JavaMailSender mailSender;
     private final AiInsightRepository insightRepository;
@@ -63,6 +63,20 @@ public class EmailNotificationService {
     public void sendAfterHoursInsight(AiInsight insight, PortfolioSnapshot snapshot) {
         if (insight == null || Boolean.TRUE.equals(insight.getEmailed())) return;
 
+        String portfolioSummary = getString(snapshot);
+
+        String subject = "CFO After-Hours Review — " +
+                insight.getInsightDate().format(DateTimeFormatter.ofPattern("dd MMM yyyy"));
+        String htmlBody = buildEmailHtml(insight, portfolioSummary);
+
+        sendHtmlEmail(toEmail, subject, htmlBody);
+
+        insight.setEmailed(true);
+        insightRepository.save(insight);
+        log.info("After-hours insight email sent to {}", toEmail);
+    }
+
+    private static String getString(PortfolioSnapshot snapshot) {
         String portfolioSummary = "";
         if (snapshot != null) {
             portfolioSummary = """
@@ -77,16 +91,7 @@ public class EmailNotificationService {
                     snapshot.getDayPnlPercent()
             );
         }
-
-        String subject = "CFO After-Hours Review — " +
-                insight.getInsightDate().format(DateTimeFormatter.ofPattern("dd MMM yyyy"));
-        String htmlBody = buildEmailHtml(insight, portfolioSummary);
-
-        sendHtmlEmail(toEmail, subject, htmlBody);
-
-        insight.setEmailed(true);
-        insightRepository.save(insight);
-        log.info("After-hours insight email sent to {}", toEmail);
+        return portfolioSummary;
     }
 
     /**
