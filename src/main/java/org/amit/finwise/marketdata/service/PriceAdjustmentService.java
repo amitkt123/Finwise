@@ -92,7 +92,7 @@ public class PriceAdjustmentService {
         // adj_close = close × product of factors of all events with ex_date > trade_date.
         List<Row> rows = jdbc.query(
                 "SELECT id, trade_date, close FROM md_eod_price WHERE instrument_id = ? ORDER BY trade_date",
-                (rs, i) -> new Row(rs.getLong("id"),
+                (rs, _) -> new Row(rs.getLong("id"),
                         rs.getObject("trade_date", LocalDate.class),
                         rs.getBigDecimal("close")),
                 instrumentId);
@@ -148,7 +148,7 @@ public class PriceAdjustmentService {
         List<BigDecimal> rs = jdbc.query(
                 "SELECT close FROM md_eod_price WHERE instrument_id = ? AND trade_date < ? "
                         + "ORDER BY trade_date DESC LIMIT 1",
-                (r, i) -> r.getBigDecimal("close"), instrumentId, exDate);
-        return rs.isEmpty() ? null : rs.get(0);
+                (r, _) -> r.getBigDecimal("close"), instrumentId, exDate);
+        return rs.isEmpty() ? null : rs.getFirst();
     }
 }

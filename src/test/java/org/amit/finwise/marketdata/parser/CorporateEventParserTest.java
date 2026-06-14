@@ -29,7 +29,7 @@ class CorporateEventParserTest {
                 CorporateEventParser.parseEventCalendar(fixture("event_calendar_sample.json"), mapper);
         assertFalse(records.isEmpty());
 
-        EventRecord first = records.get(0);
+        EventRecord first = records.getFirst();
         assertEquals("FINKURVE", first.symbol());
         assertEquals(LocalDate.of(2026, 6, 15), first.eventDate());
         assertEquals(CorporateEventType.FUND_RAISING, first.eventType());

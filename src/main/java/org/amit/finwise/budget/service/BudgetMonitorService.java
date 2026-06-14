@@ -119,7 +119,7 @@ public class BudgetMonitorService {
             for (Expense.ExpenseCategory category : Expense.ExpenseCategory.values()) {
                 BigDecimal spent = expenseRepository.sumExpensesByMonthAndCategory(userId, date.getYear(), date.getMonthValue(), category);
                 if (spent.compareTo(BigDecimal.ZERO) > 0) {
-                    insights.trends.computeIfAbsent(category.toString(), k -> new ArrayList<>()).add(spent);
+                    insights.trends.computeIfAbsent(category.toString(), _ -> new ArrayList<>()).add(spent);
                 }
             }
         }

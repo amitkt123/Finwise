@@ -501,10 +501,10 @@ public class PolicyIntelligenceService {
     private Set<String> extractGoalTerms(List<FinancialGoal> goals) {
         Set<String> terms = new LinkedHashSet<>();
         for (FinancialGoal goal : goals) {
-            if (goal.getType() == null) {
-                continue;
-            }
             switch (goal.getType()) {
+                case null -> {
+                    continue;
+                }
                 case RETIREMENT, INVESTMENT, WEALTH_BUILDING -> {
                     terms.add("capital markets");
                     terms.add("tax");

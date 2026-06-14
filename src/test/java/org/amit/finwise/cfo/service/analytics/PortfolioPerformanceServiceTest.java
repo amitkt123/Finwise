@@ -4,7 +4,6 @@ import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.model.StockPriceHistory;
 import org.amit.finwise.cfo.model.Transaction;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.service.StockPriceService;
 import org.junit.jupiter.api.Test;
@@ -39,7 +38,7 @@ class PortfolioPerformanceServiceTest {
 
     @Mock PortfolioSnapshotRepository snapshotRepository;
     @Mock TransactionRepository transactionRepository;
-    @Mock StockPriceHistoryRepository priceHistoryRepository;
+    @Mock BackbonePriceReader backbone;
     @InjectMocks PortfolioPerformanceService service;
 
     private static final String USER = "u";
@@ -81,7 +80,7 @@ class PortfolioPerformanceServiceTest {
     void missingBenchmarkData_leavesRelativeFieldsNaNButKeepsTwrr() {
         mockSnapshots(100_000, 110_000, 121_000, 108_900, 119_790);
         when(transactionRepository.findBuySellTransactionsAsc(USER)).thenReturn(List.of());
-        when(priceHistoryRepository.findRecentBySymbol(anyString(), any(LocalDate.class)))
+        when(backbone.dailySeries(anyString(), any(LocalDate.class)))
                 .thenReturn(List.of());
 
         PortfolioPerformanceService.TwrrResult r = service.computeTwrr(USER).orElseThrow();
@@ -115,7 +114,7 @@ class PortfolioPerformanceServiceTest {
                     .adjustedClose(BigDecimal.valueOf(closes[i]))
                     .build());
         }
-        lenient().when(priceHistoryRepository.findRecentBySymbol(
+        lenient().when(backbone.dailySeries(
                 org.mockito.ArgumentMatchers.eq(StockPriceService.NIFTY_SYMBOL),
                 any(LocalDate.class))).thenReturn(rows);
     }

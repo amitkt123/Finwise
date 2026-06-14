@@ -141,7 +141,7 @@ public class LlmRefinementService {
                 .filter(a -> !a.isLlmReviewed())
                 // Skip near-duplicate articles deduped into an existing cluster (DF-6):
                 // the canonical article carries the event, so don't waste inference.
-                .filter(a -> !a.isClusterDuplicate())
+                .filter(a -> !Boolean.TRUE.equals(a.getClusterDuplicate()))
                 // The pipeline already flagged needsLlmReview but we re-check here
                 // using the same criteria so it's self-contained
                 .filter(this::shouldReview)
@@ -498,7 +498,7 @@ public class LlmRefinementService {
                             objectMapper.readValue(cleaned, RefinedClassification.class);
                     log.warn("LLM returned a single object instead of an array — wrapping it");
                     return List.of(single);
-                } catch (Exception ignored) {}
+                } catch (Exception _) {}
             }
 
             // ── Fallback 2: truncated JSON — recover complete objects ─────────────
@@ -514,7 +514,7 @@ public class LlmRefinementService {
                         log.info("Recovered {}/{} results from truncated LLM response", partial.size(), expectedCount);
                         return partial;
                     }
-                } catch (Exception ignored) {}
+                } catch (Exception _) {}
             }
 
             log.warn("Failed to parse LLM response ({}). Raw response (first 500 chars): {}",
@@ -596,7 +596,7 @@ public class LlmRefinementService {
                             article.setSentiment(newSentiment);
                             changed = true;
                         }
-                    } catch (IllegalArgumentException ignored) {}
+                    } catch (IllegalArgumentException _) {}
                 }
 
                 // Fundamental sentiment (business reality — dual-sentiment model)
@@ -606,7 +606,7 @@ public class LlmRefinementService {
                                 NewsArticle.Sentiment.valueOf(r.fundamentalSentiment);
                         article.setFundamentalSentiment(fundamental);
                         changed = true;
-                    } catch (IllegalArgumentException ignored) {}
+                    } catch (IllegalArgumentException _) {}
                 }
 
                 // Category
@@ -617,7 +617,7 @@ public class LlmRefinementService {
                             article.setCategory(newCat);
                             changed = true;
                         }
-                    } catch (IllegalArgumentException ignored) {}
+                    } catch (IllegalArgumentException _) {}
                 }
 
                 // ImpactType
@@ -625,7 +625,7 @@ public class LlmRefinementService {
                     try {
                         article.setImpactType(NewsArticle.ImpactType.valueOf(r.impactType));
                         changed = true;
-                    } catch (IllegalArgumentException ignored) {}
+                    } catch (IllegalArgumentException _) {}
                 }
 
                 // ImpactHorizon
@@ -633,7 +633,7 @@ public class LlmRefinementService {
                     try {
                         article.setImpactHorizon(NewsArticle.ImpactHorizon.valueOf(r.impactHorizon));
                         changed = true;
-                    } catch (IllegalArgumentException ignored) {}
+                    } catch (IllegalArgumentException _) {}
                 }
 
                 // Symbols: merge (Tier 2 gazetteer + LLM additions) — gated by confidence

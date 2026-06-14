@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 /**
@@ -48,11 +47,11 @@ class EvidencePackServiceTest {
                 service.retrieve("TCS earnings", Set.of("TCS"), 5);
 
         assertEquals(2, packs.size());
-        assertEquals(1L, packs.get(0).clusterId());                 // recent + overlap wins
-        assertTrue(packs.get(0).score() > packs.get(1).score());
-        assertTrue(packs.get(0).outcomeSummary().contains("TCS +3.2%"));
-        assertTrue(packs.get(0).outcomeSummary().contains("over 5d"));
-        assertTrue(packs.get(0).render().contains("→"));
+        assertEquals(1L, packs.getFirst().clusterId());                 // recent + overlap wins
+        assertTrue(packs.getFirst().score() > packs.get(1).score());
+        assertTrue(packs.getFirst().outcomeSummary().contains("TCS +3.2%"));
+        assertTrue(packs.getFirst().outcomeSummary().contains("over 5d"));
+        assertTrue(packs.getFirst().render().contains("→"));
     }
 
     @Test

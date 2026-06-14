@@ -200,7 +200,7 @@ public class MarketDataScheduler {
     private void pause() {
         try {
             Thread.sleep(800);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }

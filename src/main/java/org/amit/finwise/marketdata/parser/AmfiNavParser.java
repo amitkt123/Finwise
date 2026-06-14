@@ -108,7 +108,7 @@ public final class AmfiNavParser {
         if (s.isEmpty() || s.equalsIgnoreCase("N.A.") || s.equalsIgnoreCase("NA")) return null;
         try {
             return new BigDecimal(s.replace(",", ""));
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException _) {
             return null;
         }
     }
@@ -117,7 +117,7 @@ public final class AmfiNavParser {
         if (s.isEmpty()) return null;
         try {
             return LocalDate.parse(s, DATE_FMT);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             return null;
         }
     }

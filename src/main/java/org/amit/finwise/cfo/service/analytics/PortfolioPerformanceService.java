@@ -6,7 +6,6 @@ import org.amit.finwise.cfo.model.PortfolioSnapshot;
 import org.amit.finwise.cfo.model.StockPriceHistory;
 import org.amit.finwise.cfo.model.Transaction;
 import org.amit.finwise.cfo.repository.PortfolioSnapshotRepository;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.service.StockPriceService;
 import org.apache.commons.math3.stat.StatUtils;
@@ -40,7 +39,7 @@ public class PortfolioPerformanceService {
 
     private final PortfolioSnapshotRepository snapshotRepository;
     private final TransactionRepository transactionRepository;
-    private final StockPriceHistoryRepository priceHistoryRepository;
+    private final BackbonePriceReader backbone;
 
     private static final int LOOKBACK_DAYS = 730;
     private static final int MIN_SNAPSHOTS = 5;
@@ -150,10 +149,10 @@ public class PortfolioPerformanceService {
                 activeReturnAnnualized, trackingError, informationRatio));
     }
 
-    /** Nifty 50 adjusted closes from the DB, ascending — empty map when absent. */
+    /** Nifty 50 closes from the DF-1 index backbone (md_index_eod), ascending — empty when absent. */
     private NavigableMap<LocalDate, Double> benchmarkCloses(LocalDate from) {
         NavigableMap<LocalDate, Double> closes = new TreeMap<>();
-        for (StockPriceHistory row : priceHistoryRepository.findRecentBySymbol(
+        for (StockPriceHistory row : backbone.dailySeries(
                 StockPriceService.NIFTY_SYMBOL, from.minusDays(7))) {
             BigDecimal px = row.getAdjustedClose() != null ? row.getAdjustedClose() : row.getClosePrice();
             if (row.getPriceDate() != null && px != null && px.signum() > 0) {

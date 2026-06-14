@@ -8,6 +8,15 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
 import java.math.BigDecimal;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -48,16 +57,79 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
     private static final String FALLBACK_URL =
             "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range={range}d&interval=1d";
 
+    private static final String UA =
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+    private static final long CRUMB_TTL_MS = 6 * 60 * 60 * 1_000L; // 6 hours
+
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
 
+    // Session client for crumb acquisition — CookieManager carries the Yahoo session cookie.
+    private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+    private final HttpClient sessionClient = HttpClient.newBuilder()
+            .cookieHandler(cookieManager)
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
+    private volatile String crumb = null;
+    private volatile long crumbFetchedAt = 0;
+
     public YahooFinancePriceProvider() {
         this.restClient = RestClient.builder()
-                .defaultHeader("User-Agent",
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+                .defaultHeader("User-Agent", UA)
                 .defaultHeader("Accept", "application/json")
                 .build();
         this.objectMapper = new ObjectMapper();
+    }
+
+    /**
+     * Warm up a Yahoo Finance session and fetch a fresh crumb.
+     * Thread-safe: double-checked with a TTL; refresh silently on failure so
+     * the crumb stays non-null on subsequent retries.
+     */
+    private synchronized void refreshCrumb() {
+        try {
+            // Step 1: warm up session — Yahoo sets the A3 / GUCS cookies here
+            sessionClient.send(
+                    HttpRequest.newBuilder().uri(URI.create("https://finance.yahoo.com/"))
+                            .header("User-Agent", UA).GET().build(),
+                    HttpResponse.BodyHandlers.discarding());
+
+            // Step 2: fetch crumb string
+            HttpResponse<String> resp = sessionClient.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create("https://query1.finance.yahoo.com/v1/test/getcrumb"))
+                            .header("User-Agent", UA).GET().build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() == 200 && resp.body() != null && !resp.body().isBlank()) {
+                crumb = resp.body().trim();
+                crumbFetchedAt = System.currentTimeMillis();
+                log.info("[Yahoo] Crumb refreshed OK");
+            } else {
+                log.warn("[Yahoo] Crumb fetch returned HTTP {}", resp.statusCode());
+            }
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            log.warn("[Yahoo] Crumb refresh failed: {}", e.getMessage());
+        }
+    }
+
+    private void ensureCrumb() {
+        if (crumb == null || System.currentTimeMillis() - crumbFetchedAt > CRUMB_TTL_MS) {
+            refreshCrumb();
+        }
+    }
+
+    /** Extract all Yahoo session cookies as a single Cookie header value. */
+    private String cookieHeader() {
+        StringBuilder sb = new StringBuilder();
+        for (java.net.HttpCookie c : cookieManager.getCookieStore().getCookies()) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(c.getName()).append("=").append(c.getValue());
+        }
+        return sb.toString();
     }
 
     @Override
@@ -83,33 +155,38 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
      */
     public FundamentalsSnapshot fetchFundamentals(String symbol) throws PriceProviderException {
         String yahooTicker = toYahooTicker(symbol);
-        try {
-            return fetchFundamentalsSafe(yahooTicker, symbol);
-        } catch (PriceProviderException primaryEx) {
-            log.debug("[Yahoo] Fundamentals fetch failed for {}: {}", symbol, primaryEx.getMessage());
-            throw primaryEx;
-        }
+        ensureCrumb();
+        return doFetchFundamentals(yahooTicker, symbol, false);
     }
 
-    private FundamentalsSnapshot fetchFundamentalsSafe(String yahooTicker, String symbol)
+    private FundamentalsSnapshot doFetchFundamentals(String yahooTicker, String symbol, boolean retry)
             throws PriceProviderException {
+        String crumbParam = (crumb != null && !crumb.isBlank())
+                ? "&crumb=" + URLEncoder.encode(crumb, StandardCharsets.UTF_8) : "";
         String url = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/" + yahooTicker
-                + "?modules=defaultKeyStatistics,financialData,summaryDetail,incomeStatementHistory";
+                + "?modules=defaultKeyStatistics,financialData,summaryDetail,incomeStatementHistory"
+                + crumbParam;
 
         String responseBody;
         try {
             responseBody = restClient.get()
                     .uri(url)
+                    .header("Cookie", cookieHeader())
                     .retrieve()
                     .body(String.class);
         } catch (RestClientException e) {
+            if (!retry && e.getMessage() != null &&
+                    (e.getMessage().contains("401") || e.getMessage().contains("crumb"))) {
+                log.info("[Yahoo] 401 for {}, refreshing crumb and retrying", symbol);
+                refreshCrumb();
+                return doFetchFundamentals(yahooTicker, symbol, true);
+            }
             throw new PriceProviderException("HTTP request failed for fundamentals: " + e.getMessage(), e);
         }
 
         if (responseBody == null || responseBody.isBlank()) {
             throw new PriceProviderException("Empty response from quoteSummary for " + symbol);
         }
-
         return parseFundamentalsResponse(responseBody, symbol);
     }
 
@@ -122,16 +199,32 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
      */
     public List<QuarterlySnapshot> fetchQuarterlyFundamentals(String symbol) throws PriceProviderException {
         String yahooTicker = toYahooTicker(symbol);
+        ensureCrumb();
+        return doFetchQuarterly(yahooTicker, symbol, false);
+    }
+
+    private List<QuarterlySnapshot> doFetchQuarterly(String yahooTicker, String symbol, boolean retry)
+            throws PriceProviderException {
+        String crumbParam = (crumb != null && !crumb.isBlank())
+                ? "&crumb=" + URLEncoder.encode(crumb, StandardCharsets.UTF_8) : "";
         String url = "https://query1.finance.yahoo.com/v10/finance/quoteSummary/" + yahooTicker
-                + "?modules=earnings,balanceSheetHistoryQuarterly,cashflowStatementHistoryQuarterly,incomeStatementHistoryQuarterly";
+                + "?modules=earnings,balanceSheetHistoryQuarterly,cashflowStatementHistoryQuarterly,"
+                + "incomeStatementHistoryQuarterly" + crumbParam;
 
         String responseBody;
         try {
             responseBody = restClient.get()
                     .uri(url)
+                    .header("Cookie", cookieHeader())
                     .retrieve()
                     .body(String.class);
         } catch (RestClientException e) {
+            if (!retry && e.getMessage() != null &&
+                    (e.getMessage().contains("401") || e.getMessage().contains("crumb"))) {
+                log.info("[Yahoo] 401 quarterly for {}, refreshing crumb and retrying", symbol);
+                refreshCrumb();
+                return doFetchQuarterly(yahooTicker, symbol, true);
+            }
             throw new PriceProviderException("HTTP request failed for quarterly fundamentals: " + e.getMessage(), e);
         }
         if (responseBody == null || responseBody.isBlank()) {
@@ -300,7 +393,7 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
             } else {
                 return BigDecimal.valueOf(node.asDouble()).setScale(4, java.math.RoundingMode.HALF_UP);
             }
-        } catch (Exception e) {
+        } catch (Exception _) {
             return null;
         }
     }

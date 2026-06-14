@@ -179,11 +179,11 @@ public final class MacroSeriesParsers {
 
     private static Integer parseIntOrNull(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return null; }
+        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException _) { return null; }
     }
 
     private static BigDecimal parseDecimalOrNull(String s) {
         if (s == null || s.isBlank()) return null;
-        try { return new BigDecimal(s.trim().replace(",", "")); } catch (NumberFormatException e) { return null; }
+        try { return new BigDecimal(s.trim().replace(",", "")); } catch (NumberFormatException _) { return null; }
     }
 }

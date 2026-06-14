@@ -131,7 +131,7 @@ public class StockPriceService {
 
             // Rate limit courtesy pause between symbols
             if (interSymbolDelayMs > 0) {
-                try { Thread.sleep(interSymbolDelayMs); } catch (InterruptedException ex) {
+                try { Thread.sleep(interSymbolDelayMs); } catch (InterruptedException _) {
                     Thread.currentThread().interrupt();
                     break;
                 }
@@ -508,7 +508,7 @@ public class StockPriceService {
         for (String index : indexSymbols) {
             total += fetchAndPersistIndex(index, days);
             if (interSymbolDelayMs > 0) {
-                try { Thread.sleep(interSymbolDelayMs); } catch (InterruptedException ex) {
+                try { Thread.sleep(interSymbolDelayMs); } catch (InterruptedException _) {
                     Thread.currentThread().interrupt();
                     break;
                 }

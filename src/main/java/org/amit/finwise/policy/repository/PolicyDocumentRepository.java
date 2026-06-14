@@ -4,6 +4,7 @@ import org.amit.finwise.policy.model.PolicyAuthority;
 import org.amit.finwise.policy.model.PolicyDocument;
 import org.amit.finwise.policy.model.PolicyDocumentStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.NativeQuery;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -32,7 +33,7 @@ public interface PolicyDocumentRepository extends JpaRepository<PolicyDocument, 
             @Param("authority") PolicyAuthority authority,
             @Param("status") PolicyDocumentStatus status);
 
-    @Query(value = """
+    @NativeQuery("""
             WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
             SELECT d.*
             FROM policy_documents d
@@ -50,6 +51,6 @@ public interface PolicyDocumentRepository extends JpaRepository<PolicyDocument, 
                  || setweight(to_tsvector('simple', coalesce(d.affected_sectors_csv, '')), 'A'),
                  q.query
             ) DESC, d.updated_at DESC
-            """, nativeQuery = true)
+            """)
     List<PolicyDocument> search(@Param("query") String query);
 }

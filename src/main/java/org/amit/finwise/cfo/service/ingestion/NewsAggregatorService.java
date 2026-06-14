@@ -141,7 +141,7 @@ public class NewsAggregatorService {
                 Charset charset = StandardCharsets.UTF_8;
                 if (ct != null && ct.contains("charset=")) {
                     try { charset = Charset.forName(ct.split("charset=")[1].split(";")[0].trim()); }
-                    catch (Exception ignored) {}
+                    catch (Exception _) {}
                 }
                 // Fix bare & not part of a valid XML entity (common in FE, BT, economy-watch feeds)
                 String rawXml = new String(rawBytes, charset)

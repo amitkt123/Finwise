@@ -94,10 +94,7 @@ public class OllamaProvider implements LLMProvider {
 
         for (int i = 0; i < messages.size(); i++) {
             LLMMessage msg = messages.get(i);
-            String preview = msg.content().length() > 200
-                    ? msg.content().substring(0, 200) + "..."
-                    : msg.content();
-            log.debug("Ollama message[{}] role={}: {}", i, msg.role(), preview);
+            log.info("Ollama message[{}] role={} (full):\n{}", i, msg.role(), msg.content());
         }
 
         try {
@@ -106,11 +103,11 @@ public class OllamaProvider implements LLMProvider {
                     .uri("/api/chat")
                     .body(requestBody)
                     .retrieve()
-                    .onStatus(HttpStatusCode::isError, (req, res) -> {
+                    .onStatus(HttpStatusCode::isError, (_, res) -> {
                         String body = "unable to read error response";
                         try {
                             body = res.getBody() != null ? new String(res.getBody().readAllBytes()) : body;
-                        } catch (Exception ignored) {}
+                        } catch (Exception _) {}
                         log.error("Ollama API error (HTTP {}): {}", res.getStatusCode(), body);
                         throw new RuntimeException("Ollama returned error: " + res.getStatusCode());
                     })

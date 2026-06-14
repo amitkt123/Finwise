@@ -100,8 +100,8 @@ public class FundamentalTrendService {
      */
     private double cagr(List<QuarterlyFundamentals> quarters,
                         Function<QuarterlyFundamentals, BigDecimal> getter) {
-        BigDecimal first = getter.apply(quarters.get(0));
-        BigDecimal last = getter.apply(quarters.get(quarters.size() - 1));
+        BigDecimal first = getter.apply(quarters.getFirst());
+        BigDecimal last = getter.apply(quarters.getLast());
         if (first == null || last == null
                 || first.doubleValue() <= 0 || last.doubleValue() <= 0) return Double.NaN;
 
@@ -165,13 +165,13 @@ public class FundamentalTrendService {
     /** Share-count data must exist at both ends of the YoY window. */
     private boolean isDilutionComputable(List<QuarterlyFundamentals> quarters) {
         if (quarters.size() < 5) return false;
-        return quarters.get(quarters.size() - 1).getSharesOutstanding() != null
+        return quarters.getLast().getSharesOutstanding() != null
                 && quarters.get(quarters.size() - 5).getSharesOutstanding() != null;
     }
 
     /** Latest share count vs 4 quarters earlier. */
     private boolean shareDilution(List<QuarterlyFundamentals> quarters) {
-        BigDecimal recent = quarters.get(quarters.size() - 1).getSharesOutstanding();
+        BigDecimal recent = quarters.getLast().getSharesOutstanding();
         BigDecimal yearAgo = quarters.get(quarters.size() - 5).getSharesOutstanding();
         return recent.compareTo(yearAgo) > 0;
     }

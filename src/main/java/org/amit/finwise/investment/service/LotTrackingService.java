@@ -93,7 +93,7 @@ public class LotTrackingService {
             }
 
             if (t.getTransactionType() == Transaction.TransactionType.BUY) {
-                open.computeIfAbsent(sym, k -> new ArrayDeque<>())
+                open.computeIfAbsent(sym, _ -> new ArrayDeque<>())
                         .addLast(new MutableLot(t.getTransactionDate(), qty, price));
                 continue;
             }

@@ -4,19 +4,19 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.DataQualityFlag;
 import org.amit.finwise.cfo.model.StockPriceHistory;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
- * Produces canonical daily simple-return series from StockPriceHistory.
+ * Produces canonical daily simple-return series from the market-wide DF-1 backbone
+ * (via {@link BackbonePriceReader}: md_eod_price for stocks, md_index_eod for indices).
  *
  * Return formula: r_t = P_t / P_{t-1} − 1 using adjustedClose (fallback closePrice).
- * SUSPECT_GAP records are excluded so split-corrupted points don't poison risk metrics.
+ * Backbone closes are already corporate-action back-adjusted, so split/bonus level
+ * shifts don't poison returns; any point still flagged excluded is dropped defensively.
  *
  * All risk math in the system must consume returns from this single service — no
  * duplicated return computation elsewhere.
@@ -26,7 +26,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReturnSeriesService {
 
-    private final StockPriceHistoryRepository priceRepo;
+    private final BackbonePriceReader backbone;
 
     /** Minimum number of valid observations required to include a symbol in risk calcs. */
     public static final int MIN_OBSERVATIONS = 60;
@@ -42,10 +42,7 @@ public class ReturnSeriesService {
     public Map<String, NavigableMap<LocalDate, Double>> getReturnSeries(
             List<String> symbols, LocalDate since) {
 
-        List<StockPriceHistory> records = priceRepo.findRecentBySymbols(symbols, since);
-
-        Map<String, List<StockPriceHistory>> bySymbol = records.stream()
-                .collect(Collectors.groupingBy(StockPriceHistory::getSymbol));
+        Map<String, List<StockPriceHistory>> bySymbol = backbone.dailySeries(symbols, since);
 
         Map<String, NavigableMap<LocalDate, Double>> result = new LinkedHashMap<>();
 

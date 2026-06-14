@@ -71,21 +71,21 @@ public class NewsClassificationPipeline {
         NewsArticle.Category category;
         try {
             category = NewsArticle.Category.valueOf(tier1.category());
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException _) {
             category = NewsArticle.Category.MARKET;
         }
 
         NewsArticle.ImpactType impactType;
         try {
             impactType = NewsArticle.ImpactType.valueOf(tier1.impactType());
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException _) {
             impactType = NewsArticle.ImpactType.MACRO;
         }
 
         NewsArticle.ImpactHorizon impactHorizon;
         try {
             impactHorizon = NewsArticle.ImpactHorizon.valueOf(tier1.impactHorizon());
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException _) {
             impactHorizon = NewsArticle.ImpactHorizon.MEDIUM_TERM;
         }
 

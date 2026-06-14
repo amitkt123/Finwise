@@ -170,7 +170,7 @@ public class NewsArticle {
      */
     @Column(name = "cluster_duplicate")
     @Builder.Default
-    private boolean clusterDuplicate = false;
+    private Boolean clusterDuplicate = false;
 
     @CreationTimestamp
     @Column(nullable = false, updatable = false)

@@ -210,7 +210,7 @@ public class CorporateActionService {
     private void sleep() {
         try {
             Thread.sleep(THROTTLE_MS);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             stopRequested = true;
         }

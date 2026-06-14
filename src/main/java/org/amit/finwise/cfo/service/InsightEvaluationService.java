@@ -62,8 +62,10 @@ public class InsightEvaluationService {
     /** The version stamp on every claim; bump when the brief prompt changes materially. */
     public static final String PROMPT_VERSION = "v1";
 
+    // Matches "Confidence: 0.7", "**Confidence:** (0.7)", "*confidence: ~0.75~", etc.
+    // [^0-9]{0,30} skips markdown decorators/colons/spaces between the keyword and the value.
     private static final Pattern CONFIDENCE =
-            Pattern.compile("(?i)confidence[:\\s]*\\(?([01](?:\\.\\d+)?)\\)?");
+            Pattern.compile("(?i)\\bconfidence\\b[^0-9]{0,30}([01](?:\\.\\d+)?)");
 
     private static final Set<String> BULLISH_WORDS = Set.of(
             "buy", "accumulate", "add", "bullish", "positive", "overweight",
@@ -122,7 +124,19 @@ public class InsightEvaluationService {
         Map<String, InsightClaim> best = new LinkedHashMap<>();  // key = symbol|horizon
         EventOutcome.Horizon horizon = EventOutcome.Horizon.H5D;  // default bucket
 
-        for (String raw : insight.getContent().split("\\R")) {
+        // Collapse indented continuation lines (leading whitespace) into the preceding
+        // bullet so multi-line action items are processed as a single unit.
+        String[] rawLines = insight.getContent().split("\\R");
+        List<String> lines = new ArrayList<>(rawLines.length);
+        for (String raw : rawLines) {
+            if (!raw.isEmpty() && (raw.charAt(0) == ' ' || raw.charAt(0) == '\t') && !lines.isEmpty()) {
+                lines.set(lines.size() - 1, lines.get(lines.size() - 1) + " " + raw.trim());
+            } else {
+                lines.add(raw);
+            }
+        }
+
+        for (String raw : lines) {
             String line = raw.trim();
             if (line.isEmpty()) continue;
 
@@ -256,7 +270,7 @@ public class InsightEvaluationService {
         int days = claim.getHorizon().tradingDays;
         if (series.size() <= days) return null;          // not matured
 
-        EodPrice base = series.get(0);
+        EodPrice base = series.getFirst();
         double basePrice = priceOf(base);
         if (basePrice <= 0) return null;
         EodPrice horizonRow = series.get(days);
@@ -286,8 +300,8 @@ public class InsightEvaluationService {
         List<IndexEod> rows = indexEodRepository
                 .findByIndexNameIgnoreCaseAndTradeDateBetweenOrderByTradeDate(benchmarkIndex, from, to);
         if (rows.size() < 2) return null;
-        BigDecimal first = rows.get(0).getClose();
-        BigDecimal last = rows.get(rows.size() - 1).getClose();
+        BigDecimal first = rows.getFirst().getClose();
+        BigDecimal last = rows.getLast().getClose();
         if (first == null || last == null || first.signum() == 0) return null;
         return last.subtract(first).doubleValue() / first.doubleValue();
     }
@@ -331,8 +345,8 @@ public class InsightEvaluationService {
             int outcome = c.getCorrect() ? 1 : 0;
             double conf = c.getConfidence() != null ? c.getConfidence() : 0.0;
 
-            counts.computeIfAbsent(key, k -> new int[2]);
-            sums.computeIfAbsent(key, k -> new double[2]);
+            counts.computeIfAbsent(key, _ -> new int[2]);
+            sums.computeIfAbsent(key, _ -> new double[2]);
             sample.putIfAbsent(key, c);
             counts.get(key)[0]++;
             counts.get(key)[1] += outcome;

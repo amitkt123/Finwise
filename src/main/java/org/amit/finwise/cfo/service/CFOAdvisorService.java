@@ -39,6 +39,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -175,7 +176,9 @@ public class CFOAdvisorService {
                    - ⏳ Short-Term (0–7 days): Immediate actions
                    - 📅 Medium-Term (1–3 months): Positioning decisions
                    - 🧱 Long-Term (1+ year): Strategic allocation shifts
-                   For each action include: Confidence: X.X (0.0–1.0)
+                   Format EACH action as a SINGLE LINE: `- SYMBOL ACTION_VERB: reason — Confidence: 0.X`
+                   ACTION_VERB must be one of: buy, accumulate, add, trim, reduce, sell, exit, hold, watch
+                   Example: `- HDFCBANK trim: top risk contributor, VOLATILE market, beta=1.16 — Confidence: 0.7`
                 5. **Risk Assessment** — Lead with the quant **Risk Decomposition** block (annualized vol, portfolio beta vs Nifty, 1-day VaR/CVaR, effective bets, top risk contributors with %% of volatility). Map the top contributors to specific holdings. Treat the **News-Sentiment Risk Scorecard** as a secondary sentiment signal only — never present it as the portfolio's actual risk.
 
                 Rules:
@@ -218,7 +221,8 @@ public class CFOAdvisorService {
                 1. **Day's Performance** — Portfolio P&L vs Nifty 50; reference exact holdings from context
                 2. **News → Holdings Impact Table** — For each relevant news item, map it to a specific holding:
                    | Holding | Sector | Exposure%% | News Catalyst | Impact | Confidence |
-                3. **Opportunities Spotted** — Buy/sell signals with Confidence: X.X (0.0–1.0)
+                3. **Opportunities Spotted** — Format each as: `- SYMBOL ACTION_VERB: reason — Confidence: 0.X`
+                   ACTION_VERB must be one of: buy, accumulate, add, trim, reduce, sell, exit, hold, watch
                 4. **Rebalancing Check** — Use sector exposure from context; flag any sector > 35%% as concentrated
                 5. **Tomorrow's Watch** — Key events segmented by time horizon:
                    - ⏳ 0–7 days | 📅 1–3 months
@@ -273,7 +277,8 @@ public class CFOAdvisorService {
                 3. **News → Holdings Impact** — For each relevant news item map it to a holding:
                    | Holding | Sector | Exposure%% | News Catalyst | Impact | Confidence |
                 4. **Intraday Observations** — Any circuit breaker hits, unusual volume, or anomalies
-                5. **Actionable Signals** — Concrete buy/hold/sell signals with Confidence: X.X (0.0–1.0)
+                5. **Actionable Signals** — Format each as: `- SYMBOL ACTION_VERB: reason — Confidence: 0.X`
+                   ACTION_VERB must be one of: buy, accumulate, add, trim, reduce, sell, exit, hold, watch
 
                 Rules:
                 - Use exact prices and %% changes from the "Recent Price Trends" section in context.
@@ -976,7 +981,7 @@ public class CFOAdvisorService {
                         org.amit.finwise.cfo.model.StockPriceHistory h = latestPriceMap.get(inv.getSymbol().toUpperCase());
                         if (h != null && h.getClosePrice() != null && inv.getQuantity() != null) {
                             BigDecimal cv = h.getClosePrice().multiply(inv.getQuantity())
-                                    .setScale(2, BigDecimal.ROUND_HALF_UP);
+                                    .setScale(2, RoundingMode.HALF_UP);
                             currentValueStr = "₹" + cv + " (price: ₹" + h.getClosePrice() + " as of " + h.getPriceDate() + ")";
                             if (inv.getTotalCost() != null && inv.getTotalCost().compareTo(BigDecimal.ZERO) != 0) {
                                 double pnlPct = cv.subtract(inv.getTotalCost()).doubleValue()

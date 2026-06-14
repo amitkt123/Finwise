@@ -177,7 +177,7 @@ public class EmbeddingService {
                 ORDER BY e.embedding <=> ?::vector
                 LIMIT ?
                 """,
-                (rs, rowNum) -> new SimilarArticle(
+                (rs, _) -> new SimilarArticle(
                         rs.getLong("id"),
                         rs.getString("title"),
                         rs.getString("sentiment"),
@@ -246,7 +246,7 @@ public class EmbeddingService {
                     ORDER BY e.embedding <=> ?::vector
                     LIMIT 1
                     """,
-                    (rs, n) -> new RecentMatch(
+                    (rs, _) -> new RecentMatch(
                             rs.getLong("id"),
                             (Long) rs.getObject("cluster_id"),
                             rs.getDouble("similarity")),
@@ -280,7 +280,7 @@ public class EmbeddingService {
                     ORDER BY e.embedding <=> ?::vector
                     LIMIT ?
                     """,
-                    (rs, n) -> new ClusterMatch(
+                    (rs, _) -> new ClusterMatch(
                             rs.getLong("cluster_id"),
                             rs.getString("title"),
                             rs.getTimestamp("first_seen") != null

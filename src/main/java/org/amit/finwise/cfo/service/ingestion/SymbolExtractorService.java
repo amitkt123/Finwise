@@ -619,7 +619,7 @@ public class SymbolExtractorService {
 
     private void registerSymbol(String symbol, String isin, String sector, List<String> aliases) {
         SymbolEntry entry = symbolMap.computeIfAbsent(symbol,
-                k -> new SymbolEntry(symbol, isin, sector, new ArrayList<>(aliases)));
+                _ -> new SymbolEntry(symbol, isin, sector, new ArrayList<>(aliases)));
 
         // Merge aliases if entry already exists
         for (String alias : aliases) {

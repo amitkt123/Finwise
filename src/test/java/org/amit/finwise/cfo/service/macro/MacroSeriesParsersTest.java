@@ -102,8 +102,8 @@ class MacroSeriesParsersTest {
                 MacroSeriesParsers.parseDataGovRecords(json, "month", "year", "value", mapper);
 
         assertEquals(2, obs.size(), "the malformed row is skipped, not fatal");
-        assertEquals(LocalDate.of(2026, 4, 30), obs.get(0).obsDate());
-        assertEquals(new BigDecimal("4.83"), obs.get(0).value());
+        assertEquals(LocalDate.of(2026, 4, 30), obs.getFirst().obsDate());
+        assertEquals(new BigDecimal("4.83"), obs.getFirst().value());
         assertEquals(LocalDate.of(2026, 3, 31), obs.get(1).obsDate());
     }
 

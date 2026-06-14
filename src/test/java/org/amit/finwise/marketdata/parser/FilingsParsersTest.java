@@ -30,7 +30,7 @@ class FilingsParsersTest {
                 """;
         List<AnnouncementRecord> recs = FilingsParsers.parseAnnouncements(json, mapper);
         assertEquals(1, recs.size());
-        AnnouncementRecord a = recs.get(0);
+        AnnouncementRecord a = recs.getFirst();
         assertEquals("TCS", a.symbol());
         assertEquals("Financial Results", a.subject());
         assertEquals(2026, a.broadcastAt().getYear());
@@ -51,7 +51,7 @@ class FilingsParsersTest {
         List<DealRecord> recs = FilingsParsers.parseDeals(json, mapper);
         assertEquals(2, recs.size());
 
-        DealRecord buy = recs.get(0);
+        DealRecord buy = recs.getFirst();
         assertEquals(LocalDate.of(2026, 6, 2), buy.dealDate());
         assertEquals("IDEA", buy.symbol());
         assertEquals(MarketDeal.Side.BUY, buy.side());

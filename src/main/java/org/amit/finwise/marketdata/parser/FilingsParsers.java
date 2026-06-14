@@ -143,7 +143,7 @@ public final class FilingsParsers {
         if (s == null) return null;
         try {
             return new BigDecimal(s.replace(",", "").replace("%", ""));
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException _) {
             return null;
         }
     }
@@ -153,7 +153,7 @@ public final class FilingsParsers {
         if (s == null) return null;
         try {
             return Long.parseLong(s.replace(",", "").trim());
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException _) {
             return null;
         }
     }
@@ -163,7 +163,7 @@ public final class FilingsParsers {
         String head = s.length() > 11 ? s.substring(0, 11) : s; // tolerate trailing time
         try {
             return LocalDate.parse(head.trim(), DATE);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             return null;
         }
     }
@@ -172,7 +172,7 @@ public final class FilingsParsers {
         if (s == null) return null;
         try {
             return LocalDateTime.parse(s.trim(), DATETIME);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             LocalDate d = date(s);
             return d == null ? null : d.atStartOfDay().with(LocalTime.MIDNIGHT);
         }

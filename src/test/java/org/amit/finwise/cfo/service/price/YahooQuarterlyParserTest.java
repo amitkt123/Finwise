@@ -48,7 +48,7 @@ class YahooQuarterlyParserTest {
 
         assertEquals(2, quarters.size());
 
-        YahooFinancePriceProvider.QuarterlySnapshot q4 = quarters.get(0); // ascending order
+        YahooFinancePriceProvider.QuarterlySnapshot q4 = quarters.getFirst(); // ascending order
         assertEquals(LocalDate.of(2025, 12, 31), q4.quarterEnd);
         assertEquals(0, new BigDecimal("1800000").compareTo(q4.revenue));
         assertEquals(0, new BigDecimal("8500000").compareTo(q4.totalAssets));

@@ -159,7 +159,7 @@ public class InvestorBehaviorService {
             LinkedHashMap<String, Integer> sorted = sectorCounts.entrySet().stream()
                     .sorted(Map.Entry.<String, Integer>comparingByValue().reversed())
                     .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                            (a, b) -> a, LinkedHashMap::new));
+                            (a, _) -> a, LinkedHashMap::new));
             sectorAffinityJson = objectMapper.writeValueAsString(sorted);
         } catch (Exception e) {
             log.warn("[Behavior] Failed to serialize sectorAffinity: {}", e.getMessage());
@@ -305,7 +305,7 @@ public class InvestorBehaviorService {
                 price,
                 t.getQuantity().doubleValue()
             };
-            buyQueues.computeIfAbsent(sym, k -> new ArrayDeque<>()).add(lot);
+            buyQueues.computeIfAbsent(sym, _ -> new ArrayDeque<>()).add(lot);
         }
 
         List<Long> holdingDaysList = new ArrayList<>();

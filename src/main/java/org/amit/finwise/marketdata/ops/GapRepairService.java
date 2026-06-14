@@ -3,6 +3,7 @@ package org.amit.finwise.marketdata.ops;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.service.notification.EmailNotificationService;
+import org.amit.finwise.marketdata.client.NseApiClient.NseUnavailableException;
 import org.amit.finwise.marketdata.model.IngestionRun;
 import org.amit.finwise.marketdata.repository.IngestionRunRepository;
 import org.amit.finwise.marketdata.service.EodIngestionService;
@@ -81,6 +82,7 @@ public class GapRepairService {
         }
 
         // 2) index-close and delivery on real trading days only.
+        boolean nseDealsDown = false;
         for (LocalDate d : weekdays) {
             if (isHoliday(d)) continue;
             if (!isSuccess(IngestionRun.JOB_INDEX_CLOSE, d)) {
@@ -98,13 +100,25 @@ public class GapRepairService {
             // bulk/block deals (one fetch covers both types).
             if (!isSuccess(IngestionRun.JOB_BULK_DEAL, d) || !isSuccess(IngestionRun.JOB_BLOCK_DEAL, d)) {
                 gaps++;
-                boolean ok = attempt(() -> {
-                    var results = filingsService.ingestDeals(d, d);
-                    return results.stream().anyMatch(r -> r.status() != IngestionRun.Status.FAILED)
-                            ? IngestionRun.Status.SUCCESS : IngestionRun.Status.FAILED;
-                });
-                tally(ok, IngestionRun.JOB_BULK_DEAL, d, critical, failures, criticalFailures);
-                if (ok) repaired++; else stillFailing++;
+                if (nseDealsDown) {
+                    stillFailing++;
+                    failures.add(IngestionRun.JOB_BULK_DEAL + " @ " + d + " (NSE unavailable)");
+                    continue;
+                }
+                try {
+                    boolean ok = attempt(() -> {
+                        var results = filingsService.ingestDeals(d, d);
+                        return results.stream().anyMatch(r -> r.status() != IngestionRun.Status.FAILED)
+                                ? IngestionRun.Status.SUCCESS : IngestionRun.Status.FAILED;
+                    });
+                    tally(ok, IngestionRun.JOB_BULK_DEAL, d, critical, failures, criticalFailures);
+                    if (ok) repaired++; else stillFailing++;
+                } catch (NseUnavailableException e) {
+                    log.warn("[GapRepair] NSE unavailable ({}) — skipping bulk/block deal repair for remaining dates", e.getMessage());
+                    nseDealsDown = true;
+                    stillFailing++;
+                    failures.add(IngestionRun.JOB_BULK_DEAL + " @ " + d + " (NSE unavailable)");
+                }
             }
         }
 
@@ -151,13 +165,16 @@ public class GapRepairService {
 
     // ── internals ─────────────────────────────────────────────────────────────
 
-    /** Run the ingest with exponential backoff; true once it returns non-FAILED. */
+    /** Run the ingest with exponential backoff; true once it returns non-FAILED.
+     *  NseUnavailableException (503/429) is propagated immediately — no point retrying. */
     private boolean attempt(Supplier<IngestionRun.Status> ingest) {
         long backoff = baseBackoffMs;
         for (int i = 1; i <= maxAttempts; i++) {
             IngestionRun.Status status;
             try {
                 status = ingest.get();
+            } catch (NseUnavailableException e) {
+                throw e;
             } catch (RuntimeException e) {
                 status = IngestionRun.Status.FAILED;
                 log.warn("[GapRepair] attempt {}/{} threw: {}", i, maxAttempts, e.getMessage());
@@ -212,7 +229,7 @@ public class GapRepairService {
     private void sleep(long ms) {
         try {
             Thread.sleep(ms);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }

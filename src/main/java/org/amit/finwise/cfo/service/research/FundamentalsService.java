@@ -199,7 +199,7 @@ public class FundamentalsService {
                         symbol.toUpperCase(),
                         LocalDate.now().minusMonths(14),
                         LocalDate.now().minusMonths(10))
-                .stream().reduce((first, second) -> second) // latest in window
+                .stream().reduce((_, second) -> second) // latest in window
                 .orElse(null);
 
         if (yearAgo != null) {

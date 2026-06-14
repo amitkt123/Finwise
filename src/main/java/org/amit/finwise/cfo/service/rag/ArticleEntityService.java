@@ -66,7 +66,7 @@ public class ArticleEntityService {
                         .confidence(confidence)
                         .source(source)
                         .build());
-            } catch (RuntimeException e) {
+            } catch (RuntimeException _) {
                 // Concurrent insert raced the unique constraint — benign.
                 log.debug("Skipped duplicate entity edge {}:{} for article {}",
                         type, entityId, articleId);

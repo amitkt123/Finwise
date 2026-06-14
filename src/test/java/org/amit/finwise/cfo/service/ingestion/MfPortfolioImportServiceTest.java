@@ -46,7 +46,7 @@ class MfPortfolioImportServiceTest {
         ArgumentCaptor<List<MfPortfolioHolding>> captor = ArgumentCaptor.forClass(List.class);
         verify(repo).saveAll(captor.capture());
         assertEquals(3, captor.getValue().size());
-        assertEquals("TCS", captor.getValue().get(0).getSymbol());
+        assertEquals("TCS", captor.getValue().getFirst().getSymbol());
     }
 
     @Test

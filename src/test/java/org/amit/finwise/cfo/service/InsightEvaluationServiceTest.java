@@ -81,7 +81,7 @@ class InsightEvaluationServiceTest {
                 """;
         List<InsightClaim> claims = svc.parseClaims(insight(brief), Set.of("TCS"));
         assertEquals(1, claims.size());
-        assertEquals(0.8, claims.get(0).getConfidence(), 1e-9);
+        assertEquals(0.8, claims.getFirst().getConfidence(), 1e-9);
     }
 
     @Test
@@ -94,6 +94,6 @@ class InsightEvaluationServiceTest {
                 """;
         List<InsightClaim> claims = svc.parseClaims(insight(brief), Set.of("M&M", "INFY"));
         assertEquals(1, claims.size());
-        assertEquals("M&M", claims.get(0).getSymbol());
+        assertEquals("M&M", claims.getFirst().getSymbol());
     }
 }

@@ -33,7 +33,7 @@ class BhavcopyParsersTest {
         assertEquals(5, records.size());
         assertTrue(records.stream().noneMatch(r -> r.series().equals("GS")));
 
-        EodRecord first = records.get(0);
+        EodRecord first = records.getFirst();
         assertEquals("20MICRONS", first.symbol());
         assertEquals("INE144J01027", first.isin());
         assertEquals(LocalDate.of(2021, 4, 1), first.tradeDate());
@@ -55,7 +55,7 @@ class BhavcopyParsersTest {
         // fixture: 4 EQ + 1 BE kept, N6/ST dropped
         assertEquals(5, records.size());
 
-        EodRecord first = records.get(0);
+        EodRecord first = records.getFirst();
         assertEquals("UNOMINDA", first.symbol());
         assertEquals("INE405E01023", first.isin());
         assertEquals("UNO MINDA LIMITED", first.name());
@@ -70,7 +70,7 @@ class BhavcopyParsersTest {
         List<IndexRecord> records = BhavcopyParsers.parseIndexCloseAll(fixture("ind_close_all_sample.csv"));
 
         assertEquals(5, records.size());
-        IndexRecord nifty = records.get(0);
+        IndexRecord nifty = records.getFirst();
         assertEquals("Nifty 50", nifty.indexName());
         assertEquals(LocalDate.of(2025, 1, 10), nifty.tradeDate());
         assertEquals(new BigDecimal("23431.5"), nifty.close());
@@ -88,7 +88,7 @@ class BhavcopyParsersTest {
                 """;
         List<IndexRecord> records = BhavcopyParsers.parseIndexCloseAll(csv);
         assertEquals(1, records.size());
-        IndexRecord vix = records.get(0);
+        IndexRecord vix = records.getFirst();
         assertEquals("India VIX", vix.indexName());
         assertEquals(new BigDecimal("14.77"), vix.close());
         assertNull(vix.pe());
@@ -107,7 +107,7 @@ class BhavcopyParsersTest {
         var records = BhavcopyParsers.parseSecBhavdataFull(csv);
 
         assertEquals(2, records.size()); // GS dropped
-        var first = records.get(0);
+        var first = records.getFirst();
         assertEquals("20MICRONS", first.symbol());
         assertEquals(LocalDate.of(2021, 4, 1), first.tradeDate());
         assertEquals(new BigDecimal("35.16"), first.vwap());
@@ -134,6 +134,6 @@ class BhavcopyParsersTest {
                 """;
         List<EodRecord> records = BhavcopyParsers.parseOldCm(csv);
         assertEquals(1, records.size());
-        assertEquals("GOOD", records.get(0).symbol());
+        assertEquals("GOOD", records.getFirst().symbol());
     }
 }

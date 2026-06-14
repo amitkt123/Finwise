@@ -204,7 +204,7 @@ public class MarketDataAdminController {
             @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
         java.util.List<FilingsService.IngestResult> results = filingsService.ingestDeals(from, to);
         return Map.of(
-                "bulk", Map.of("status", results.get(0).status(), "rows", results.get(0).rows()),
+                "bulk", Map.of("status", results.getFirst().status(), "rows", results.getFirst().rows()),
                 "block", Map.of("status", results.get(1).status(), "rows", results.get(1).rows()));
     }
 

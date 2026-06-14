@@ -108,10 +108,10 @@ public final class CorporateEventParser {
         if (s == null) return null;
         try {
             return LocalDate.parse(s);                 // yyyy-MM-dd
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException _) {
             try {
                 return LocalDate.parse(s, NSE_DATE);    // dd-MMM-yyyy
-            } catch (RuntimeException e) {
+            } catch (RuntimeException _) {
                 return null;
             }
         }

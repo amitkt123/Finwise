@@ -421,7 +421,7 @@ public class PolicyDocumentCrawlerService {
     private String resolveHref(String baseUrl, String href) {
         try {
             return URI.create(baseUrl).resolve(href).toString();
-        } catch (Exception e) {
+        } catch (Exception _) {
             return href;
         }
     }
@@ -608,7 +608,7 @@ public class PolicyDocumentCrawlerService {
         }
         try {
             return PolicyAuthority.valueOf(raw.trim().toUpperCase(Locale.ENGLISH));
-        } catch (Exception e) {
+        } catch (Exception _) {
             return PolicyAuthority.OTHER;
         }
     }
@@ -617,7 +617,7 @@ public class PolicyDocumentCrawlerService {
         if (configured != null && !configured.isBlank()) {
             try {
                 return PolicyDocumentType.valueOf(configured.trim().toUpperCase(Locale.ENGLISH));
-            } catch (Exception ignored) {
+            } catch (Exception _) {
             }
         }
 
@@ -646,7 +646,7 @@ public class PolicyDocumentCrawlerService {
         if (configured != null && !configured.isBlank()) {
             try {
                 return PolicyBindingLevel.valueOf(configured.trim().toUpperCase(Locale.ENGLISH));
-            } catch (Exception ignored) {
+            } catch (Exception _) {
             }
         }
         if (documentType == PolicyDocumentType.ACT) return PolicyBindingLevel.LAW;
@@ -672,7 +672,7 @@ public class PolicyDocumentCrawlerService {
         if (configured != null && !configured.isBlank()) {
             try {
                 return PolicyArea.valueOf(configured.trim().toUpperCase(Locale.ENGLISH));
-            } catch (Exception ignored) {
+            } catch (Exception _) {
             }
         }
 
@@ -1222,12 +1222,12 @@ public class PolicyDocumentCrawlerService {
         }
         try {
             return LocalDate.parse(value.substring(0, 10));
-        } catch (Exception ignored) {
+        } catch (Exception _) {
         }
         for (DateTimeFormatter formatter : DATE_FORMATTERS) {
             try {
                 return LocalDate.parse(value.trim(), formatter);
-            } catch (Exception ignored) {
+            } catch (Exception _) {
             }
         }
         return null;
@@ -1322,7 +1322,7 @@ public class PolicyDocumentCrawlerService {
                 canonical.append("?").append(query);
             }
             return canonical.toString();
-        } catch (Exception e) {
+        } catch (Exception _) {
             return url.trim();
         }
     }

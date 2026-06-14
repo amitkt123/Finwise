@@ -38,7 +38,7 @@ class LotTrackingServiceTest {
         LotTrackingService.LotLedger ledger = service.buildLedger(USER);
 
         assertEquals(2, ledger.realizedGains().size());
-        LotTrackingService.RealizedGain first = ledger.realizedGains().get(0);
+        LotTrackingService.RealizedGain first = ledger.realizedGains().getFirst();
         assertEquals(LocalDate.parse("2023-01-10"), first.buyDate());
         assertEquals(2000.0, first.gain(), 1e-9);
         assertTrue(first.longTerm(), "held 2 years — long-term");
@@ -51,8 +51,8 @@ class LotTrackingServiceTest {
         // Open ledger: 5 units of the 2024 lot remain
         List<LotTrackingService.HoldingLot> open = ledger.openLotsBySymbol().get("TCS");
         assertEquals(1, open.size());
-        assertEquals(0, open.get(0).quantity().compareTo(BigDecimal.valueOf(5)));
-        assertEquals(0, open.get(0).costPerUnit().compareTo(BigDecimal.valueOf(200)));
+        assertEquals(0, open.getFirst().quantity().compareTo(BigDecimal.valueOf(5)));
+        assertEquals(0, open.getFirst().costPerUnit().compareTo(BigDecimal.valueOf(200)));
     }
 
     @Test
@@ -64,7 +64,7 @@ class LotTrackingServiceTest {
         LotTrackingService.LotLedger ledger = service.buildLedger(USER);
 
         assertEquals(1, ledger.realizedGains().size(), "only the matched 5 units realize a gain");
-        assertEquals(1000.0, ledger.realizedGains().get(0).gain(), 1e-9);
+        assertEquals(1000.0, ledger.realizedGains().getFirst().gain(), 1e-9);
         assertTrue(ledger.notes().stream().anyMatch(n -> n.startsWith("UNMATCHED_SELL: INFY")),
                 "the 3 unmatched units must be disclosed, got " + ledger.notes());
         assertFalse(ledger.openLotsBySymbol().containsKey("INFY"));
@@ -89,7 +89,7 @@ class LotTrackingServiceTest {
         when(transactionRepository.findBuySellTransactionsAsc(USER)).thenReturn(List.of(t));
 
         LotTrackingService.LotLedger ledger = service.buildLedger(USER);
-        assertEquals(0, ledger.openLotsBySymbol().get("HDFC").get(0)
+        assertEquals(0, ledger.openLotsBySymbol().get("HDFC").getFirst()
                 .costPerUnit().compareTo(BigDecimal.valueOf(1500)));
     }
 

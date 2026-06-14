@@ -63,8 +63,7 @@ public class GoogleAIProvider implements LLMProvider {
 
                 log.info("Sending request to Google AI: model={}, messageCount={}, promptLength={}, temperature={}, maxTokens={}",
                         model, messages.size(), combinedPrompt.length(), temperature, maxTokens);
-                log.debug("Google AI prompt preview: {}",
-                        combinedPrompt.length() > 200 ? combinedPrompt.substring(0, 200) + "..." : combinedPrompt);
+                log.info("Google AI full prompt:\n{}", combinedPrompt);
 
                 Map<String, Object> requestBody = Map.of(
                         "contents", List.of(
@@ -83,11 +82,11 @@ public class GoogleAIProvider implements LLMProvider {
                         .uri(url)
                         .body(requestBody)
                         .retrieve()
-                        .onStatus(HttpStatusCode::isError, (req, res) -> {
+                        .onStatus(HttpStatusCode::isError, (_, res) -> {
                             String body = "unable to read error response";
                             try {
                                 body = res.getBody() != null ? new String(res.getBody().readAllBytes()) : body;
-                            } catch (Exception ignored) {}
+                            } catch (Exception _) {}
                             log.error("Google AI API error (HTTP {}): {}", res.getStatusCode(), body);
                             throw new RuntimeException("Google AI returned error: " + res.getStatusCode());
                         })
@@ -140,9 +139,9 @@ public class GoogleAIProvider implements LLMProvider {
 
     private String extractText(GoogleAIResponse response) {
         if (response != null && response.candidates() != null && !response.candidates().isEmpty()) {
-            var candidate = response.candidates().get(0);
+            var candidate = response.candidates().getFirst();
             if (candidate.content() != null && candidate.content().parts() != null && !candidate.content().parts().isEmpty()) {
-                return candidate.content().parts().get(0).text();
+                return candidate.content().parts().getFirst().text();
             }
         }
 

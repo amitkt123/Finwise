@@ -5,7 +5,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.DataQualityFlag;
 import org.amit.finwise.cfo.model.StockPriceHistory;
 import org.amit.finwise.cfo.model.TechnicalSnapshot;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -15,7 +14,8 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * Computes technical indicators from StockPriceHistory.
+ * Computes technical indicators from the DF-1 market-wide EOD backbone
+ * (via {@link BackbonePriceReader}).
  *
  * All price math uses adjustedClose (fallback closePrice) to avoid
  * corporate-action artifacts in moving averages and return series.
@@ -30,7 +30,7 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class TechnicalAnalysisService {
 
-    private final StockPriceHistoryRepository priceRepo;
+    private final BackbonePriceReader backbone;
 
     /** Number of calendar days to look back. 400 covers 252 trading days + weekends + holidays. */
     private static final int LOOKBACK_CALENDAR_DAYS = 400;
@@ -45,7 +45,7 @@ public class TechnicalAnalysisService {
      */
     public Optional<TechnicalSnapshot> analyze(String symbol) {
         LocalDate since = LocalDate.now().minusDays(LOOKBACK_CALENDAR_DAYS);
-        List<StockPriceHistory> raw = priceRepo.findRecentBySymbol(symbol.toUpperCase(), since);
+        List<StockPriceHistory> raw = backbone.dailySeries(symbol.toUpperCase(), since);
         if (raw.size() < 15) {
             log.debug("[TechnicalAnalysis] {} — only {} records, skipping", symbol, raw.size());
             return Optional.empty();

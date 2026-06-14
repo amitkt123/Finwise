@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.marketdata.client.NseApiClient;
+import org.amit.finwise.marketdata.client.NseApiClient.NseUnavailableException;
 import org.amit.finwise.marketdata.model.IngestionRun;
 import org.amit.finwise.marketdata.model.Instrument;
 import org.amit.finwise.marketdata.model.MarketDeal;
@@ -110,6 +111,10 @@ public class FilingsService {
             batch(ANN_UPSERT, args);
             return ledger(IngestionRun.JOB_ANNOUNCEMENT, to, IngestionRun.Status.SUCCESS, args.size(),
                     args.size() + " announcements " + from + ".." + to, started);
+        } catch (NseUnavailableException e) {
+            log.warn("[Filings] announcements {}..{} skipped — NSE unavailable: {}", from, to, e.getMessage());
+            ledger(IngestionRun.JOB_ANNOUNCEMENT, to, IngestionRun.Status.FAILED, 0, truncate(e.getMessage()), started);
+            throw e;
         } catch (RuntimeException e) {
             log.error("[Filings] announcements {}..{} failed: {}", from, to, e.getMessage());
             return ledger(IngestionRun.JOB_ANNOUNCEMENT, to, IngestionRun.Status.FAILED, 0,
@@ -140,6 +145,10 @@ public class FilingsService {
             batch(SHP_UPSERT, new ArrayList<>(byKey.values()));
             return ledger(IngestionRun.JOB_SHAREHOLDING, to, IngestionRun.Status.SUCCESS, byKey.size(),
                     byKey.size() + " patterns " + from + ".." + to, started);
+        } catch (NseUnavailableException e) {
+            log.warn("[Filings] shareholding {}..{} skipped — NSE unavailable: {}", from, to, e.getMessage());
+            ledger(IngestionRun.JOB_SHAREHOLDING, to, IngestionRun.Status.FAILED, 0, truncate(e.getMessage()), started);
+            throw e;
         } catch (RuntimeException e) {
             log.error("[Filings] shareholding {}..{} failed: {}", from, to, e.getMessage());
             return ledger(IngestionRun.JOB_SHAREHOLDING, to, IngestionRun.Status.FAILED, 0,
@@ -181,6 +190,10 @@ public class FilingsService {
             batch(DEAL_UPSERT, args);
             return ledger(job, to, IngestionRun.Status.SUCCESS, args.size(),
                     args.size() + " " + type + " deals " + from + ".." + to, started);
+        } catch (NseUnavailableException e) {
+            log.warn("[Filings] {} deals {}..{} skipped — NSE unavailable: {}", type, from, to, e.getMessage());
+            ledger(job, to, IngestionRun.Status.FAILED, 0, truncate(e.getMessage()), started);
+            throw e;
         } catch (RuntimeException e) {
             log.error("[Filings] {} deals {}..{} failed: {}", type, from, to, e.getMessage());
             return ledger(job, to, IngestionRun.Status.FAILED, 0, truncate(e.getMessage()), started);

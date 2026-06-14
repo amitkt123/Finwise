@@ -149,7 +149,7 @@ public class FactorModelService {
         Map<String, Double> weights = fits.stream().collect(Collectors.toMap(
                 f -> f.symbol,
                 f -> rawWeights.getOrDefault(f.symbol, 0.0) / includedTotalWeight,
-                (a, b) -> a, LinkedHashMap::new));
+                (a, _) -> a, LinkedHashMap::new));
 
         // ── Portfolio factor exposures B_k = Σ wᵢ βᵢₖ ───────────────────────────
         // Canonical factor order: MKT, SIZE, then sector tickers actually used.
@@ -321,7 +321,7 @@ public class FactorModelService {
 
             return new HoldingFit(symbol, sector, sectorFactor, betas, tStats,
                     b[0], ols.calculateRSquared(), ols.estimateErrorVariance(),
-                    T, common.first(), common.last());
+                    T, common.getFirst(), common.getLast());
         } catch (Exception e) {
             log.warn("[FactorModel] Regression failed for {}: {}", symbol, e.getMessage());
             return null;

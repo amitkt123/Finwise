@@ -4,7 +4,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.LiquidityReport;
 import org.amit.finwise.cfo.model.StockPriceHistory;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.stereotype.Service;
@@ -29,7 +28,7 @@ import java.util.*;
 public class LiquidityService {
 
     private final InvestmentRepository investmentRepository;
-    private final StockPriceHistoryRepository priceRepo;
+    private final BackbonePriceReader backbone;
 
     /** Participation cap: at most 20% of ADV20 can be traded per day without impact. */
     static final double PARTICIPATION_CAP = 0.20;
@@ -73,14 +72,14 @@ public class LiquidityService {
             double weight = inv.getCurrentValue().doubleValue() / totalValue;
             weights.put(sym, weight);
 
-            List<StockPriceHistory> history = priceRepo.findRecentBySymbol(sym, since); // DESC
+            List<StockPriceHistory> history = backbone.dailySeries(sym, since); // ascending
             if (history.size() < ADV_WINDOW + 1) {
                 excluded.add(sym);
                 notes.add("LIQ_EXCLUDED: " + sym + " — insufficient price history for spread/ADV");
                 continue;
             }
 
-            // Ascending for the spread series; DESC head for ADV20.
+            // Defensive re-sort: the backbone already returns ascending by date.
             List<StockPriceHistory> asc = history.stream()
                     .sorted(Comparator.comparing(StockPriceHistory::getPriceDate)).toList();
 

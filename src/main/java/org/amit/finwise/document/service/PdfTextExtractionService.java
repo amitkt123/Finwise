@@ -22,7 +22,7 @@ public class PdfTextExtractionService {
             try (doc) {
                 return new PDFTextStripper().getText(doc);
             }
-        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException e) {
+        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException _) {
             log.warn("PDF is password-protected: {}", file.getName());
             return null;
         } catch (IOException e) {
@@ -38,7 +38,7 @@ public class PdfTextExtractionService {
             try (doc) {
                 return new PDFTextStripper().getText(doc);
             }
-        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException e) {
+        } catch (org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException _) {
             log.warn("Downloaded PDF is password-protected");
             return null;
         } catch (IOException e) {

@@ -71,4 +71,32 @@ public class FactorProperties {
                 .map(Map.Entry::getValue)
                 .findFirst();
     }
+
+    /**
+     * Yahoo index ticker → NSE index name as published in {@code ind_close_all}
+     * (md_index_eod.index_name). This is the glue that lets the risk/factor math —
+     * which keys indices by Yahoo ticker — read the official DF-1 index backbone.
+     * Override via {@code cfo.factors.index-name.<ticker>=<NSE name>}.
+     */
+    private Map<String, String> indexName = Map.ofEntries(
+            Map.entry("^NSEI", "Nifty 50"),
+            Map.entry("^NSEBANK", "Nifty Bank"),
+            Map.entry("^CNXIT", "Nifty IT"),
+            Map.entry("^CNXPHARMA", "Nifty Pharma"),
+            Map.entry("^CNXFMCG", "Nifty FMCG"),
+            Map.entry("^CNXAUTO", "Nifty Auto"),
+            Map.entry("^CNXMETAL", "Nifty Metal"),
+            Map.entry("^CNXENERGY", "Nifty Energy"),
+            Map.entry("^NSEMDCP50", "Nifty Midcap 50"),
+            Map.entry("^CNXSC", "Nifty Smallcap 100"));
+
+    /**
+     * Resolve an index ticker to its NSE index name for md_index_eod lookups.
+     * Unknown tickers fall through unchanged (an unmapped index simply finds no
+     * rows and the factor model degrades gracefully, as it already does).
+     */
+    public String nseIndexName(String ticker) {
+        if (ticker == null) return null;
+        return indexName.getOrDefault(ticker.toUpperCase(), ticker);
+    }
 }

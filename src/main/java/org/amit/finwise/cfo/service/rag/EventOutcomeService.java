@@ -121,7 +121,7 @@ public class EventOutcomeService {
                         instrument.getId(), eventDate, eventDate.plusDays(PRICE_LOOKAHEAD_DAYS));
         if (series.size() < 2) return 0;
 
-        EodPrice base = series.get(0);
+        EodPrice base = series.getFirst();
         double basePrice = priceOf(base);
         if (basePrice <= 0) return 0;
 
@@ -157,8 +157,8 @@ public class EventOutcomeService {
         List<IndexEod> rows = indexEodRepository
                 .findByIndexNameIgnoreCaseAndTradeDateBetweenOrderByTradeDate(benchmarkIndex, from, to);
         if (rows.size() < 2) return null;
-        BigDecimal first = rows.get(0).getClose();
-        BigDecimal last = rows.get(rows.size() - 1).getClose();
+        BigDecimal first = rows.getFirst().getClose();
+        BigDecimal last = rows.getLast().getClose();
         if (first == null || last == null || first.signum() == 0) return null;
         return last.subtract(first).doubleValue() / first.doubleValue();
     }
@@ -176,7 +176,7 @@ public class EventOutcomeService {
                     .eventDate(eventDate)
                     .structuredPayload(payload(canonical))
                     .build());
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             // Raced the unique(cluster_id) — another run created it first.
             log.debug("MarketEvent already present for cluster {}", cluster.getId());
         }

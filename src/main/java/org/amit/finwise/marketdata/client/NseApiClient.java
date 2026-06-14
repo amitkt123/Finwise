@@ -116,6 +116,7 @@ public class NseApiClient {
                 return doGet(url, refererPath);
             }
             if (code == 404) return Optional.empty();
+            if (code == 503 || code == 429) throw new NseUnavailableException("HTTP " + code + " from " + url, e);
             throw new NseArchiveClient.NseArchiveException("HTTP " + code + " from " + url, e);
         } catch (RuntimeException e) {
             throw new NseArchiveClient.NseArchiveException(
@@ -171,5 +172,10 @@ public class NseApiClient {
         List<String> parts = new ArrayList<>();
         cookieJar.forEach((k, v) -> parts.add(k + "=" + v));
         return String.join("; ", parts);
+    }
+
+    /** Thrown when NSE returns 503/429 — the site is down or rate-limiting; no retry is worthwhile. */
+    public static class NseUnavailableException extends NseArchiveClient.NseArchiveException {
+        public NseUnavailableException(String message, Throwable cause) { super(message, cause); }
     }
 }

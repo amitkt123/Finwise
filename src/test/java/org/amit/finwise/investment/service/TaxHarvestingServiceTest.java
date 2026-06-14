@@ -44,7 +44,7 @@ class TaxHarvestingServiceTest {
         TaxHarvestingService.HarvestPlan plan = service.suggest(USER);
 
         assertEquals(1, plan.exemptionHarvest().size());
-        TaxHarvestingService.HarvestCandidate c = plan.exemptionHarvest().get(0);
+        TaxHarvestingService.HarvestCandidate c = plan.exemptionHarvest().getFirst();
         assertEquals(50.0, c.unitsToSell(), 1e-9);
         assertEquals(5_000.0, c.ltcgRealized(), 1e-9);
         assertEquals(625.0, c.taxSavedVsLater(), 1e-9, "5,000 × 12.5%");
@@ -64,7 +64,7 @@ class TaxHarvestingServiceTest {
 
         assertTrue(plan.exemptionHarvest().isEmpty(), "short-term lot must not be exemption-harvested");
         assertEquals(1, plan.boundaryWait().size());
-        TaxHarvestingService.BoundaryCandidate b = plan.boundaryWait().get(0);
+        TaxHarvestingService.BoundaryCandidate b = plan.boundaryWait().getFirst();
         assertEquals(20, b.daysToLongTerm());
         assertEquals(10_000.0, b.unrealizedGain(), 1e-9);
         assertEquals(750.0, b.taxSavingIfWaited(), 1e-9);
@@ -82,7 +82,7 @@ class TaxHarvestingServiceTest {
         TaxHarvestingService.HarvestPlan plan = service.suggest(USER);
 
         assertEquals(2, plan.lossHarvest().size());
-        TaxHarvestingService.LossCandidate biggest = plan.lossHarvest().get(0);
+        TaxHarvestingService.LossCandidate biggest = plan.lossHarvest().getFirst();
         assertEquals("WIPRO", biggest.symbol(), "largest loss first");
         assertEquals(1_000.0, biggest.unrealizedLoss(), 1e-9);
         assertTrue(biggest.longTerm());

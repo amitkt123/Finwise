@@ -256,7 +256,7 @@ public class MfNavService {
     private void sleep() {
         try {
             Thread.sleep(seedThrottleMs);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             stopRequested = true;
         }

@@ -222,14 +222,14 @@ public class MacroStateService {
 
     private LocalDate parseDate(String value) {
         if (value == null || value.isBlank()) return null;
-        try { return LocalDate.parse(value); } catch (Exception e) { return null; }
+        try { return LocalDate.parse(value); } catch (Exception _) { return null; }
     }
 
     private LocalDate parseMonthEnd(String value) {
         if (value == null || value.isBlank()) return null;
         try {
             return java.time.YearMonth.parse(value, MONTH_FMT).atEndOfMonth();
-        } catch (Exception e) {
+        } catch (Exception _) {
             return null;
         }
     }

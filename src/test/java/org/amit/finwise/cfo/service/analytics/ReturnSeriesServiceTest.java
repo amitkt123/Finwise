@@ -2,7 +2,6 @@ package org.amit.finwise.cfo.service.analytics;
 
 import org.amit.finwise.cfo.model.DataQualityFlag;
 import org.amit.finwise.cfo.model.StockPriceHistory;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -20,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.when;
 
 /**
@@ -31,7 +31,7 @@ import static org.mockito.Mockito.when;
 class ReturnSeriesServiceTest {
 
     @Mock
-    StockPriceHistoryRepository priceRepo;
+    BackbonePriceReader backbone;
 
     @InjectMocks
     ReturnSeriesService service;
@@ -59,7 +59,7 @@ class ReturnSeriesServiceTest {
     @Test
     void computesReturns_fromAdjustedClose_andIncludesSymbolAboveMinObs() {
         // 62 records → 61 returns ≥ MIN_OBSERVATIONS (60) → symbol included.
-        when(priceRepo.findRecentBySymbols(any(), any())).thenReturn(ramp("AAA", 62));
+        when(backbone.dailySeries(anyList(), any())).thenReturn(Map.of("AAA", ramp("AAA", 62)));
 
         Map<String, NavigableMap<LocalDate, Double>> result =
                 service.getReturnSeries(List.of("AAA"), START);
@@ -79,7 +79,7 @@ class ReturnSeriesServiceTest {
         // 62 records, one flagged SUSPECT_GAP → its return date is dropped (60 returns remain ≥ 60).
         List<StockPriceHistory> records = ramp("AAA", 62);
         records.get(30).setDataQualityFlag(DataQualityFlag.SUSPECT_GAP);
-        when(priceRepo.findRecentBySymbols(any(), any())).thenReturn(records);
+        when(backbone.dailySeries(anyList(), any())).thenReturn(Map.of("AAA", records));
 
         Map<String, NavigableMap<LocalDate, Double>> result =
                 service.getReturnSeries(List.of("AAA"), START);
@@ -94,7 +94,7 @@ class ReturnSeriesServiceTest {
     @Test
     void dropsSymbol_belowMinObservations() {
         // Only 5 records → 4 returns < 60 → symbol omitted entirely.
-        when(priceRepo.findRecentBySymbols(any(), any())).thenReturn(ramp("BBB", 5));
+        when(backbone.dailySeries(anyList(), any())).thenReturn(Map.of("BBB", ramp("BBB", 5)));
 
         Map<String, NavigableMap<LocalDate, Double>> result =
                 service.getReturnSeries(List.of("BBB"), START);

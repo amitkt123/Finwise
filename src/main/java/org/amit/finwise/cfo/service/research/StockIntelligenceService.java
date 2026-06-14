@@ -298,7 +298,7 @@ public class StockIntelligenceService {
                 rd.riskContributors().stream()
                         .filter(c -> sym.equals(c.symbol()))
                         .findFirst()
-                        .ifPresent(c -> {
+                        .ifPresent(_ -> {
                             // We can't reassign betaVsNifty/pctContrib in a lambda; use arrays
                         });
                 // Direct field lookup from perHoldingBeta map

@@ -109,7 +109,7 @@ class FactorModelServiceTest {
         // BBB has 80 valid days — above ReturnSeriesService's 60-obs floor but
         // below the factor model's 120-obs alignment requirement.
         Random rng = new Random(11);
-        master.put("BBB", series(dates(80), i -> 0.005 * rng.nextGaussian()));
+        master.put("BBB", series(dates(80), _ -> 0.005 * rng.nextGaussian()));
         stubReturnSeries(master);
         when(investmentRepository.findActiveInvestments(USER))
                 .thenReturn(List.of(inv("TCS", 70_000), inv("BBB", 30_000)));

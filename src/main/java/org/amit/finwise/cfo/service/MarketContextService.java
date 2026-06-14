@@ -114,7 +114,7 @@ public class MarketContextService {
                     case "NEGATIVE" -> -weight;
                     default         ->  0.0;
                 };
-                sectorScoreAccum.computeIfAbsent(sector, k -> new ArrayList<>()).add(val);
+                sectorScoreAccum.computeIfAbsent(sector, _ -> new ArrayList<>()).add(val);
             }
         }
 

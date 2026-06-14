@@ -102,7 +102,7 @@ public class GrowwConnector {
                         .setScale(4, RoundingMode.HALF_UP);
 
                 List<Investment> existing = investmentRepository.findBySymbol(userId, h.symbol());
-                Investment inv = existing.isEmpty() ? null : existing.get(0);
+                Investment inv = existing.isEmpty() ? null : existing.getFirst();
 
                 if (inv == null) {
                     inv = Investment.builder()
@@ -344,7 +344,7 @@ public class GrowwConnector {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(raw.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
-        } catch (Exception e) {
+        } catch (Exception _) {
             return String.valueOf(raw.hashCode());
         }
     }
@@ -357,7 +357,7 @@ public class GrowwConnector {
         if (dateStr == null) return LocalDate.now();
         try {
             return LocalDate.parse(dateStr);
-        } catch (Exception e) {
+        } catch (Exception _) {
             return LocalDate.now();
         }
     }

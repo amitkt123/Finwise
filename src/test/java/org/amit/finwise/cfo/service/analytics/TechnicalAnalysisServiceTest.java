@@ -1,7 +1,6 @@
 package org.amit.finwise.cfo.service.analytics;
 
 import org.amit.finwise.cfo.model.StockPriceHistory;
-import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.model.TechnicalSnapshot;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,7 +31,7 @@ import static org.mockito.Mockito.when;
 class TechnicalAnalysisServiceTest {
 
     @Mock
-    StockPriceHistoryRepository priceRepo;
+    BackbonePriceReader backbone;
 
     @InjectMocks
     TechnicalAnalysisService service;
@@ -67,7 +66,7 @@ class TechnicalAnalysisServiceTest {
 
     @Test
     void rsi14_matchesWilderWorkedExample_finalBar() {
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(WILDER_CLOSES));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -83,7 +82,7 @@ class TechnicalAnalysisServiceTest {
         double[] first15 = new double[15];
         System.arraycopy(WILDER_CLOSES, 0, first15, 0, 15);
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(first15));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -104,7 +103,7 @@ class TechnicalAnalysisServiceTest {
             lows[i] = 99.0;
         }
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(priceHistory(closes, highs, lows));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -113,7 +112,7 @@ class TechnicalAnalysisServiceTest {
 
     @Test
     void analyze_returnsEmpty_whenInsufficientHistory() {
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(new double[]{100, 101, 102, 103, 104}));
 
         Optional<TechnicalSnapshot> snap = service.analyze("TEST");
@@ -133,7 +132,7 @@ class TechnicalAnalysisServiceTest {
         double[] closes = new double[20];
         for (int i = 0; i < 20; i++) closes[i] = i + 1;
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(closes));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -161,7 +160,7 @@ class TechnicalAnalysisServiceTest {
         for (int i = 0; i < 10; i++) {
             rows.add(bar(start.plusDays(10 + i), exampleCloses[i], exampleVolumes[i]));
         }
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
         assertEquals(72100.0, snap.obv(), 1e-9, "OBV canonical example final value");
@@ -178,7 +177,7 @@ class TechnicalAnalysisServiceTest {
         for (int i = 0; i < 200; i++) closes[i] = 100;
         closes[200] = 110;
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(closes));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -195,7 +194,7 @@ class TechnicalAnalysisServiceTest {
         closes[200] = 110;
         closes[201] = 110;
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class)))
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class)))
                 .thenReturn(closesOnly(closes));
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
@@ -212,7 +211,7 @@ class TechnicalAnalysisServiceTest {
         for (int i = 0; i < 20; i++) rows.add(bar(start.plusDays(i), 100 + i, 1000));
         rows.add(bar(start.plusDays(20), 121, 1500));
 
-        when(priceRepo.findRecentBySymbol(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
+        when(backbone.dailySeries(eq("TEST"), any(LocalDate.class))).thenReturn(rows);
 
         TechnicalSnapshot snap = service.analyze("TEST").orElseThrow();
         assertEquals(1.5, snap.volumeRatio(), 1e-12, "1500 vs flat 1000 average");

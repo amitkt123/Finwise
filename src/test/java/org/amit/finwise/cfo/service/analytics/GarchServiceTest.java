@@ -61,7 +61,7 @@ class GarchServiceTest {
         assertEquals(0.94, vf.persistence(), 1e-12, "EWMA persistence == lambda");
         assertTrue(Double.isNaN(vf.longRunDailyVol()), "EWMA has no long-run level");
         assertFalse(vf.notes().isEmpty());
-        assertTrue(vf.notes().get(0).startsWith("GARCH_FALLBACK"));
+        assertTrue(vf.notes().getFirst().startsWith("GARCH_FALLBACK"));
         // flat EWMA: 10-day vol == √10 × 1-day vol
         assertEquals(Math.sqrt(10) * vf.conditionalDailyVol(), vf.tenDayVol(), 1e-12);
     }

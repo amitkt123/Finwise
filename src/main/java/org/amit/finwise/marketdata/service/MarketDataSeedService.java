@@ -158,7 +158,7 @@ public class MarketDataSeedService {
     private void sleep() {
         try {
             Thread.sleep(throttleMs);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
             stopRequested = true;
         }

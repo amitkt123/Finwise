@@ -187,7 +187,7 @@ public class PeerUniverseService implements MarketDataProvider.FundamentalsProvi
     private void sleep() {
         try {
             Thread.sleep(interSymbolDelayMs);
-        } catch (InterruptedException e) {
+        } catch (InterruptedException _) {
             Thread.currentThread().interrupt();
         }
     }

@@ -60,7 +60,7 @@ class MacroSeriesServiceUpsertTest {
         MacroSeriesService.IngestResult r = service.upsert(List.of(revised));
 
         assertEquals(1, store.size());
-        assertEquals(new BigDecimal("6.25"), store.get(0).getValue(), "value updated in place");
+        assertEquals(new BigDecimal("6.25"), store.getFirst().getValue(), "value updated in place");
         assertEquals(1, r.observations());
         assertEquals(1, r.seriesTouched());
     }

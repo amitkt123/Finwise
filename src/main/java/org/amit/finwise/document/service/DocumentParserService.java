@@ -291,7 +291,7 @@ public class DocumentParserService {
                 try {
                     currentDate = LocalDate.parse(dm.group(1), EN_MMM_D_YYYY);
                     currentMerchant = null;
-                } catch (Exception e) {
+                } catch (Exception _) {
                     log.debug("PhonePe: unrecognised date '{}'", line);
                 }
                 continue;
@@ -320,7 +320,7 @@ public class DocumentParserService {
                         BigDecimal amount = new BigDecimal(am.group(2).replace(",", ""));
                         transactions.add(buildTransaction(currentDate, amount, desc, merchant,
                                 ParsedTransaction.TransactionDirection.DEBIT, "UPI_STATEMENT"));
-                    } catch (Exception e) {
+                    } catch (Exception _) {
                         log.debug("PhonePe: could not parse amount '{}'", line);
                     }
                 }

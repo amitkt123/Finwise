@@ -138,7 +138,7 @@ public class AttributionService {
             double kt = carinoCoef(p.rP(), p.rB());
             double scale = k != 0 ? kt / k : 0.0;
             for (var e : p.effects().entrySet()) {
-                double[] agg = linked.computeIfAbsent(e.getKey(), x -> new double[3]);
+                double[] agg = linked.computeIfAbsent(e.getKey(), _ -> new double[3]);
                 for (int i = 0; i < 3; i++) agg[i] += scale * e.getValue()[i];
             }
         }
@@ -191,7 +191,7 @@ public class AttributionService {
             String idx = factorProperties.indexForSector(resolveSector(inv)).orElse(null);
             if (idx == null) { unmappedPfValue += val; continue; }
             pfValueByIndex.merge(idx, val, Double::sum);
-            holdingsByIndex.computeIfAbsent(idx, x -> new ArrayList<>())
+            holdingsByIndex.computeIfAbsent(idx, _ -> new ArrayList<>())
                     .add(new HoldingRef(inv.getSymbol().toUpperCase(), val));
         }
         if (pfValueByIndex.isEmpty()) {
@@ -271,7 +271,7 @@ public class AttributionService {
 
         return Optional.of(new AttributionReport(
                 bench.asOf,
-                months.get(0).atDay(1), months.get(months.size() - 1).atEndOfMonth(),
+                months.getFirst().atDay(1), months.getLast().atEndOfMonth(),
                 periods.size(),
                 linked.Rp, linked.Rb, linked.Rp - linked.Rb,
                 linked.allocation, linked.selection, linked.interaction, linked.residual,
@@ -323,7 +323,7 @@ public class AttributionService {
                 : String.format("stock selection (%+.2f%%)", l.selection * 100);
         String topSector = sectors.isEmpty() ? "" :
                 String.format("; biggest contributor %s (%+.2f%%)",
-                        sectors.get(0).sector(), sectors.get(0).total() * 100);
+                        sectors.getFirst().sector(), sectors.getFirst().total() * 100);
         return String.format("Portfolio %s Nifty by %+.2f%% over the window, driven mainly by %s%s",
                 verb, excess * 100, driver, topSector);
     }
@@ -355,7 +355,7 @@ public class AttributionService {
                         int i = t.toLowerCase().indexOf("asof=");
                         if (i >= 0) {
                             try { asOf = LocalDate.parse(t.substring(i + 5).trim()); }
-                            catch (Exception ignored) { }
+                            catch (Exception _) { }
                         }
                         continue;
                     }
@@ -364,7 +364,7 @@ public class AttributionService {
                     String sector = c[0].trim();
                     double pct;
                     try { pct = Double.parseDouble(c[1].trim()); }
-                    catch (NumberFormatException e) { continue; }
+                    catch (NumberFormatException _) { continue; }
                     String idx = factorProperties.indexForSector(sector).orElse(null);
                     if (idx == null) { unmappedPct += pct; continue; }
                     byIndex.merge(idx, pct / 100.0, Double::sum);

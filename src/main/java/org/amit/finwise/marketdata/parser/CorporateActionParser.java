@@ -135,7 +135,7 @@ public final class CorporateActionParser {
         if (s == null) return null;
         try {
             return LocalDate.parse(s, NSE_DATE);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             return null;
         }
     }
@@ -143,7 +143,7 @@ public final class CorporateActionParser {
     private static BigDecimal dec(String s) {
         try {
             return new BigDecimal(s);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException _) {
             return null;
         }
     }

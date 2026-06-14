@@ -16,6 +16,10 @@ public interface IndexEodRepository extends JpaRepository<IndexEod, Long> {
     List<IndexEod> findByIndexNameIgnoreCaseAndTradeDateBetweenOrderByTradeDate(
             String indexName, LocalDate from, LocalDate to);
 
+    /** Index closes from {@code since}, ascending — the benchmark/factor read path. */
+    List<IndexEod> findByIndexNameIgnoreCaseAndTradeDateGreaterThanEqualOrderByTradeDate(
+            String indexName, LocalDate since);
+
     /** Latest close for one index (e.g. "India VIX") — DF-3 sources VIX from the index file, not Yahoo. */
     Optional<IndexEod> findTopByIndexNameIgnoreCaseOrderByTradeDateDesc(String indexName);
 }

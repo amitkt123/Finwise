@@ -5,6 +5,9 @@ import org.amit.finwise.cfo.service.llm.GoogleAIProvider;
 import org.amit.finwise.cfo.service.llm.LLMProvider;
 import org.amit.finwise.cfo.service.llm.OllamaProvider;
 import org.amit.finwise.cfo.service.llm.OpenAIProvider;
+import org.amit.finwise.cfo.service.llm.OpenRouterProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -15,6 +18,8 @@ import java.util.concurrent.Executor;
 
 @Configuration
 public class LLMConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(LLMConfig.class);
 
     @Value("${cfo.llm.provider:ollama}")
     private String provider;
@@ -51,6 +56,12 @@ public class LLMConfig {
 
     @Value("${cfo.llm.google.temperature:0.3}")
     private float googleTemperature;
+
+    @Value("${cfo.llm.openrouter.api-key:}")
+    private String openRouterApiKey;
+
+    @Value("${cfo.llm.openrouter.model:openrouter/auto}")
+    private String openRouterModel;
 
     // ── DF-7 split provider routing ──────────────────────────────────────────
     // Briefs are inference-heavy and customer-facing → a strong API model.
@@ -94,11 +105,13 @@ public class LLMConfig {
     }
 
     private LLMProvider buildProvider(String name) {
+        log.info("LLMConfig: building provider '{}'", name);
         return switch (name.toLowerCase()) {
             case "ollama" -> new OllamaProvider(ollamaBaseUrl, ollamaModel, ollamaTemperature, ollamaMaxTokens);
             case "claude" -> new ClaudeProvider(claudeApiKey, claudeModel, ollamaMaxTokens);
             case "openai" -> new OpenAIProvider(openAiApiKey, openAiModel, ollamaMaxTokens);
             case "google" -> new GoogleAIProvider(googleApiKey, googleModel, googleTemperature, ollamaMaxTokens);
+            case "openrouter" -> new OpenRouterProvider(openRouterApiKey, openRouterModel, ollamaMaxTokens);
             default -> throw new IllegalArgumentException("Unknown LLM provider: " + name);
         };
     }

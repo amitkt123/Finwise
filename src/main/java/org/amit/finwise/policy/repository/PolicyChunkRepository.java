@@ -4,6 +4,7 @@ import org.amit.finwise.policy.model.PolicyChunk;
 import org.amit.finwise.policy.model.PolicyDocumentVersion;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.NativeQuery;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -17,7 +18,7 @@ public interface PolicyChunkRepository extends JpaRepository<PolicyChunk, Long> 
     @Query("DELETE FROM PolicyChunk c WHERE c.version = :version")
     void deleteByVersion(@Param("version") PolicyDocumentVersion version);
 
-    @Query(value = """
+    @NativeQuery("""
             WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
             SELECT c.*
             FROM policy_chunks c
@@ -38,6 +39,6 @@ public interface PolicyChunkRepository extends JpaRepository<PolicyChunk, Long> 
                  || setweight(to_tsvector('simple', coalesce(c.content, '')), 'C'),
                  q.query
             ) DESC, d.updated_at DESC, c.chunk_index ASC
-            """, nativeQuery = true)
+            """)
     List<PolicyChunk> searchCurrentChunks(@Param("query") String query);
 }

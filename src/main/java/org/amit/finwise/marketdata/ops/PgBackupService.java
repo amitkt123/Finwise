@@ -9,12 +9,12 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -96,7 +96,7 @@ public class PgBackupService {
 
             Process proc = pb.start();
             String output = new String(proc.getInputStream().readAllBytes());
-            boolean finished = proc.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+            boolean finished = proc.waitFor(Duration.ofMinutes(timeoutMinutes));
             if (!finished) {
                 proc.destroyForcibly();
                 throw new IOException("pg_dump timed out after " + timeoutMinutes + " min");

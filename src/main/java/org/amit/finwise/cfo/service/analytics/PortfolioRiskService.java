@@ -94,7 +94,7 @@ public class PortfolioRiskService {
         Map<String, NavigableMap<LocalDate, Double>> stockReturns = allReturns.entrySet().stream()
                 .filter(e -> !StockPriceService.NIFTY_SYMBOL.equals(e.getKey()))
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue,
-                        (a, b) -> a, LinkedHashMap::new));
+                        (a, _) -> a, LinkedHashMap::new));
 
         List<String> included = new ArrayList<>(stockReturns.keySet());
         List<String> excluded = symbols.stream().filter(s -> !included.contains(s)).toList();

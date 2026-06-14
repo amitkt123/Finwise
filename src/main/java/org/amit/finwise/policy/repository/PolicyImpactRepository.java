@@ -3,6 +3,7 @@ package org.amit.finwise.policy.repository;
 import org.amit.finwise.policy.model.PolicyImpact;
 import org.amit.finwise.policy.model.PolicySubjectType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.NativeQuery;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -27,7 +28,7 @@ public interface PolicyImpactRepository extends JpaRepository<PolicyImpact, Long
             @Param("subjectKeys") Collection<String> subjectKeys,
             @Param("asOfDate") LocalDate asOfDate);
 
-    @Query(value = """
+    @NativeQuery("""
             WITH q AS (SELECT websearch_to_tsquery('simple', :query) AS query)
             SELECT i.*
             FROM policy_impacts i
@@ -55,7 +56,7 @@ public interface PolicyImpactRepository extends JpaRepository<PolicyImpact, Long
                  || setweight(to_tsvector('simple', coalesce(i.falsification_signal, '')), 'D'),
                  q.query
             ) DESC, coalesce(i.confidence_score, 0.0) DESC, i.created_at DESC
-            """, nativeQuery = true)
+            """)
     List<PolicyImpact> searchActiveImpacts(
             @Param("query") String query,
             @Param("asOfDate") LocalDate asOfDate);
