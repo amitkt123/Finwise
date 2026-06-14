@@ -144,6 +144,71 @@ public class CovarianceEngine {
     }
 
     /**
+     * Dimson (1979) beta for thinly-traded names (BPR-9).
+     *
+     * Illiquid midcaps trade infrequently, so a stale closing price makes their daily
+     * returns lag the market — naive OLS beta is biased <b>downward</b> and covariance is
+     * understated. Dimson corrects this by summing the slopes from regressing the stock's
+     * return on lead, contemporaneous, and lagged market returns:
+     *
+     *   r_stock(t) = α + Σ_{k=−L..+L} β_k · r_mkt(t+k) + ε,   β_Dimson = Σ_k β_k
+     *
+     * Returns a {@link DimsonBeta} with the summed beta and naive beta side by side; NaN
+     * beta when fewer than {@code MIN_OBSERVATIONS} aligned trips exist for the regression.
+     *
+     * @param leadLag number of lead/lag market terms each side (1 is standard for daily data)
+     */
+    public DimsonBeta dimsonBetaStats(NavigableMap<LocalDate, Double> stockReturns,
+                                      NavigableMap<LocalDate, Double> benchmarkReturns,
+                                      int leadLag) {
+        double naive = betaStats(stockReturns, benchmarkReturns).beta();
+        if (leadLag < 1) {
+            return new DimsonBeta(naive, naive, 0, 0);
+        }
+        // Common dates in ascending order; lead/lag are by trading-day position.
+        List<LocalDate> common = new ArrayList<>(stockReturns.keySet());
+        common.retainAll(benchmarkReturns.keySet());
+        Collections.sort(common);
+        int n = common.size();
+        int usable = n - 2 * leadLag;
+        int k = 2 * leadLag + 1;
+        if (usable < ReturnSeriesService.MIN_OBSERVATIONS || usable <= k + 1) {
+            return new DimsonBeta(naive, Double.NaN, leadLag, Math.max(0, usable));
+        }
+
+        double[] benchAll = new double[n];
+        double[] stockAll = new double[n];
+        for (int i = 0; i < n; i++) {
+            stockAll[i] = stockReturns.get(common.get(i));
+            benchAll[i] = benchmarkReturns.get(common.get(i));
+        }
+
+        double[] y = new double[usable];
+        double[][] x = new double[usable][k];
+        for (int t = leadLag; t < n - leadLag; t++) {
+            int row = t - leadLag;
+            y[row] = stockAll[t];
+            int col = 0;
+            for (int off = -leadLag; off <= leadLag; off++) {
+                x[row][col++] = benchAll[t + off];
+            }
+        }
+
+        try {
+            org.apache.commons.math3.stat.regression.OLSMultipleLinearRegression ols =
+                    new org.apache.commons.math3.stat.regression.OLSMultipleLinearRegression();
+            ols.newSampleData(y, x);
+            double[] b = ols.estimateRegressionParameters(); // [α, β_{-L}..β_{+L}]
+            double dimson = 0;
+            for (int j = 1; j <= k; j++) dimson += b[j];
+            return new DimsonBeta(naive, dimson, leadLag, usable);
+        } catch (Exception e) {
+            log.debug("[Dimson] regression failed: {}", e.getMessage());
+            return new DimsonBeta(naive, Double.NaN, leadLag, usable);
+        }
+    }
+
+    /**
      * Downside beta using only dates where benchmark return is negative.
      */
     public BetaStats downsideBetaStats(NavigableMap<LocalDate, Double> stockReturns,
@@ -370,6 +435,23 @@ public class CovarianceEngine {
             double benchmarkVariance,
             int observations
     ) {}
+
+    /**
+     * Dimson lead/lag beta for illiquid names (BPR-9). {@code naiveBeta} is the plain
+     * OLS slope (stale-price-biased downward); {@code dimsonBeta} sums the lead/lag
+     * slopes to recover the true exposure. {@code dimsonBeta} is NaN when too few
+     * trips align for the regression — callers then keep the naive beta.
+     */
+    public record DimsonBeta(
+            double naiveBeta,
+            double dimsonBeta,
+            int leadLag,
+            int observations
+    ) {
+        public boolean isUsable() {
+            return !Double.isNaN(dimsonBeta);
+        }
+    }
 
     public record ShrinkageResult(
             double[][] sigma,   // shrunk covariance, unbiased (N-1) scale, PSD

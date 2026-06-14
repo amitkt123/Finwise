@@ -25,6 +25,26 @@ public class InvestmentService {
     private final PortfolioRepository portfolioRepository;
     private final PortfolioRiskService portfolioRiskService;
     private final CapitalGainsTaxService capitalGainsTaxService;
+    private final BondAnalyticsService bondAnalyticsService;
+
+    /**
+     * Fixed-coupon bond analytics (BPR-7) for a {@code BOND} holding. The {@link Investment}
+     * entity stores only price/quantity, so the bond terms (coupon, maturity, frequency,
+     * face) must be supplied here — typically user-entered or sourced from the instrument
+     * master. Returns YTM, durations, convexity, DV01 and accrued interest; empty when the
+     * holding is not a bond or the terms are degenerate.
+     */
+    public Optional<BondAnalyticsService.BondAnalytics> analyzeBond(
+            Investment bond, double faceValue, double annualCouponRate, int frequency,
+            LocalDate settlement, LocalDate maturity, BondAnalyticsService.DayCount dayCount) {
+        if (bond == null || bond.getType() != InvestmentType.BOND
+                || bond.getCurrentPrice() == null) {
+            return Optional.empty();
+        }
+        return bondAnalyticsService.analyze(new BondAnalyticsService.BondSpec(
+                faceValue, annualCouponRate, frequency, settlement, maturity,
+                bond.getCurrentPrice().doubleValue(), dayCount));
+    }
 
     @Transactional
     public Investment addInvestment(String userId, InvestmentType type, String symbol,

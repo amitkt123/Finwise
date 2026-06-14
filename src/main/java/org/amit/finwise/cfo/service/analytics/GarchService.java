@@ -72,9 +72,11 @@ public class GarchService {
 
         // De-mean: GARCH models the conditional variance of residuals, not raw returns.
         double mean = StatUtils.mean(returns);
+        double[] eps = new double[T];
         double[] eps2 = new double[T];
         for (int t = 0; t < T; t++) {
             double e = returns[t] - mean;
+            eps[t] = e;
             eps2[t] = e * e;
         }
 
@@ -84,6 +86,22 @@ public class GarchService {
                             T, MIN_GARCH_OBSERVATIONS, fallbackLambda));
         }
 
+        VolForecast symmetric = fitSymmetric(eps2, sampleVar, sampleVol, T, fallbackLambda);
+
+        if (!riskProperties.isAsymmetricGarchEnabled()) {
+            return symmetric;
+        }
+
+        // Fit GJR-GARCH and select the better model by information criterion. When one
+        // of the two fell back to EWMA (rejected fit) we keep the GARCH-method result;
+        // when both are GARCH-method we pick the lower IC (BPR-5).
+        VolForecast asymmetric = fitGjr(eps, eps2, sampleVar, sampleVol, T, fallbackLambda);
+        return selectByCriterion(symmetric, asymmetric, T);
+    }
+
+    /** Symmetric GARCH(1,1) fit — the original Phase-9a estimator. */
+    private VolForecast fitSymmetric(double[] eps2, double sampleVar, double sampleVol,
+                                     int T, double fallbackLambda) {
         try {
             double[] theta = optimize(eps2, sampleVar);
             double[] params = transform(theta);             // {omega, alpha, beta}
@@ -104,8 +122,7 @@ public class GarchService {
 
             // Conditional variance path with the fitted parameters → σ²_T and ε²_T.
             double[] sigma2 = variancePath(eps2, sampleVar, omega, alpha, beta);
-            double sigma2T = sigma2[T - 1];
-            double sigma2Next = omega + alpha * eps2[T - 1] + beta * sigma2T;
+            double sigma2Next = omega + alpha * eps2[T - 1] + beta * sigma2[T - 1];
 
             // Multi-step forecast: σ²_{t+h} = σ²_LR + p^{h-1}(σ²_{t+1} − σ²_LR).
             double varSum = 0.0;
@@ -114,22 +131,109 @@ public class GarchService {
             }
 
             double logLik = logLikelihood(eps2, sigma2);
-            List<String> notes = new ArrayList<>();
-            log.info("[GARCH] fit ok: ω={}, α={}, β={}, persistence={}, LL={}",
+            log.info("[GARCH] symmetric fit ok: ω={}, α={}, β={}, persistence={}, LL={}",
                     fmt(omega), fmt(alpha), fmt(beta), fmt(persistence), fmt(logLik));
 
             return new VolForecast(
                     VolForecast.Method.GARCH, T,
-                    omega, alpha, beta, persistence,
+                    omega, alpha, beta, null, persistence,
+                    Math.sqrt(sigma2Next), Math.sqrt(sigma2LR),
+                    Math.sqrt(varSum), Math.sqrt(sigma2Next) * SQRT_252,
+                    logLik, new ArrayList<>());
+
+        } catch (Exception e) {
+            log.warn("[GARCH] symmetric optimization failed ({}); falling back to EWMA", e.toString());
+            return ewmaFallback(eps2, sampleVar, fallbackLambda,
+                    "GARCH_FALLBACK: optimizer did not converge; flat EWMA used");
+        }
+    }
+
+    /**
+     * GJR-GARCH(1,1,1) fit (BPR-5): captures the leverage effect — negative shocks
+     * raise next-period variance more than positive shocks of equal size.
+     *
+     *   σ²_t = ω + (α + γ·1[ε_{t-1}<0])·ε²_{t-1} + β·σ²_{t-1}
+     *
+     * Stationarity uses E[1[ε&lt;0]] = ½, so persistence is α + γ/2 + β &lt; 1. The 4-parameter
+     * unconstrained reparameterization keeps ω&gt;0, α,γ,β ≥ 0, and persistence &lt; 1 by
+     * construction (γ ≥ 0 is the economically-expected leverage sign).
+     */
+    private VolForecast fitGjr(double[] eps, double[] eps2, double sampleVar, double sampleVol,
+                               int T, double fallbackLambda) {
+        try {
+            double[] theta = optimizeGjr(eps, eps2, sampleVar);
+            double[] params = transformGjr(theta);          // {omega, alpha, gamma, beta}
+            double omega = params[0], alpha = params[1], gamma = params[2], beta = params[3];
+            double persistence = alpha + 0.5 * gamma + beta;
+
+            if (persistence >= MAX_PERSISTENCE) {
+                return ewmaFallback(eps2, sampleVar, fallbackLambda,
+                        String.format("GJR_FALLBACK: α+γ/2+β=%.4f ≥ %.3f (near-integrated); EWMA used",
+                                persistence, MAX_PERSISTENCE));
+            }
+            double sigma2LR = omega / (1.0 - persistence);
+            if (Math.sqrt(sigma2LR) > MAX_VOL_RATIO * sampleVol) {
+                return ewmaFallback(eps2, sampleVar, fallbackLambda,
+                        String.format("GJR_FALLBACK: implied vol %.4f > %.0f× sample vol %.4f; EWMA used",
+                                Math.sqrt(sigma2LR), MAX_VOL_RATIO, sampleVol));
+            }
+
+            double[] sigma2 = variancePathGjr(eps, eps2, sampleVar, omega, alpha, gamma, beta);
+            double leverageT = eps[T - 1] < 0 ? 1.0 : 0.0;
+            double sigma2Next = omega + (alpha + gamma * leverageT) * eps2[T - 1] + beta * sigma2[T - 1];
+
+            // Forward iteration uses the expected indicator ½, hence persistence above.
+            double varSum = 0.0;
+            for (int h = 1; h <= FORECAST_HORIZON; h++) {
+                varSum += sigma2LR + Math.pow(persistence, h - 1) * (sigma2Next - sigma2LR);
+            }
+
+            double logLik = logLikelihood(eps2, sigma2);
+            List<String> notes = new ArrayList<>();
+            notes.add(String.format("GJR leverage coefficient γ=%.4f (negative-shock vol boost)", gamma));
+            log.info("[GARCH] GJR fit ok: ω={}, α={}, γ={}, β={}, persistence={}, LL={}",
+                    fmt(omega), fmt(alpha), fmt(gamma), fmt(beta), fmt(persistence), fmt(logLik));
+
+            return new VolForecast(
+                    VolForecast.Method.GJR_GARCH, T,
+                    omega, alpha, beta, gamma, persistence,
                     Math.sqrt(sigma2Next), Math.sqrt(sigma2LR),
                     Math.sqrt(varSum), Math.sqrt(sigma2Next) * SQRT_252,
                     logLik, notes);
 
         } catch (Exception e) {
-            log.warn("[GARCH] optimization failed ({}); falling back to EWMA", e.toString());
+            log.warn("[GARCH] GJR optimization failed ({}); falling back to EWMA", e.toString());
             return ewmaFallback(eps2, sampleVar, fallbackLambda,
-                    "GARCH_FALLBACK: optimizer did not converge; flat EWMA used");
+                    "GJR_FALLBACK: optimizer did not converge; flat EWMA used");
         }
+    }
+
+    /**
+     * Pick the better of the symmetric and asymmetric fits by information criterion.
+     * AIC = 2k − 2ℓ, BIC = k·ln(T) − 2ℓ (lower is better). GARCH has k=3 free
+     * parameters, GJR has k=4. A rejected fit (EWMA fallback, null logLik) loses to a
+     * valid GARCH-method fit; if both fell back, the symmetric EWMA is returned.
+     */
+    VolForecast selectByCriterion(VolForecast symmetric, VolForecast asymmetric, int T) {
+        boolean useBic = "BIC".equalsIgnoreCase(riskProperties.getGarchSelectionCriterion());
+        Double icSym = infoCriterion(symmetric, 3, T, useBic);
+        Double icAsym = infoCriterion(asymmetric, 4, T, useBic);
+
+        if (icSym == null && icAsym == null) return symmetric; // both fell back
+        if (icSym == null) return asymmetric;
+        if (icAsym == null) return symmetric;
+
+        VolForecast chosen = icAsym < icSym ? asymmetric : symmetric;
+        log.info("[GARCH] model selection ({}): symmetric={}, asymmetric={} → {}",
+                useBic ? "BIC" : "AIC", fmt(icSym), fmt(icAsym), chosen.method());
+        return chosen;
+    }
+
+    /** Information criterion for a fitted model, or null when it is not a GARCH-method fit. */
+    private static Double infoCriterion(VolForecast vf, int k, int T, boolean useBic) {
+        if (vf == null || !vf.isGarch() || vf.logLikelihood() == null) return null;
+        double penalty = useBic ? k * Math.log(T) : 2.0 * k;
+        return penalty - 2.0 * vf.logLikelihood();
     }
 
     // ── Optimization ──────────────────────────────────────────────────────────
@@ -182,6 +286,69 @@ public class GarchService {
         return sigma2;
     }
 
+    // ── GJR-GARCH numerics (BPR-5) ──────────────────────────────────────────────
+
+    private double[] optimizeGjr(double[] eps, double[] eps2, double sampleVar) {
+        MultivariateFunction negLogLik = theta -> {
+            double[] p = transformGjr(theta);
+            double[] sigma2 = variancePathGjr(eps, eps2, sampleVar, p[0], p[1], p[2], p[3]);
+            return -logLikelihood(eps2, sigma2);
+        };
+        SimplexOptimizer optimizer = new SimplexOptimizer(1e-9, 1e-12);
+        PointValuePair result = optimizer.optimize(
+                new MaxEval(40_000),
+                new ObjectiveFunction(negLogLik),
+                GoalType.MINIMIZE,
+                new InitialGuess(initialThetaGjr(sampleVar)),
+                new NelderMeadSimplex(4));
+        return result.getPoint();
+    }
+
+    /** Inverts the GJR reparameterization at α=0.03, γ=0.06, β=0.90 (persistence 0.96). */
+    private static double[] initialThetaGjr(double sampleVar) {
+        double alpha0 = 0.03, gamma0 = 0.06, beta0 = 0.90;
+        double p0 = alpha0 + 0.5 * gamma0 + beta0;          // 0.96
+        double omega0 = Math.max(sampleVar * (1.0 - p0), VARIANCE_FLOOR);
+        // Softmax logits for shares (α, γ/2, β) of p, baselined on the β component.
+        double a = alpha0, g = 0.5 * gamma0, b = beta0;
+        return new double[]{
+                Math.log(omega0),
+                logit(p0 / 0.9999),
+                Math.log(a / b),
+                Math.log(g / b)
+        };
+    }
+
+    /** θ → {ω, α, γ, β}; shares of persistence p via softmax(θ₃, θ₄, 0). */
+    static double[] transformGjr(double[] theta) {
+        double omega = Math.exp(theta[0]);
+        double p = sigmoid(theta[1]) * 0.9999;
+        double e3 = Math.exp(theta[2]);
+        double e4 = Math.exp(theta[3]);
+        double denom = e3 + e4 + 1.0;                       // third logit baselined at 0
+        double wAlpha = e3 / denom;
+        double wHalfGamma = e4 / denom;
+        double wBeta = 1.0 / denom;
+        double alpha = p * wAlpha;
+        double gamma = 2.0 * p * wHalfGamma;
+        double beta = p * wBeta;
+        return new double[]{omega, alpha, gamma, beta};
+    }
+
+    private static double[] variancePathGjr(double[] eps, double[] eps2, double seed,
+                                            double omega, double alpha, double gamma, double beta) {
+        int T = eps2.length;
+        double[] sigma2 = new double[T];
+        sigma2[0] = Math.max(seed, VARIANCE_FLOOR);
+        for (int t = 1; t < T; t++) {
+            double leverage = eps[t - 1] < 0 ? 1.0 : 0.0;
+            sigma2[t] = Math.max(
+                    omega + (alpha + gamma * leverage) * eps2[t - 1] + beta * sigma2[t - 1],
+                    VARIANCE_FLOOR);
+        }
+        return sigma2;
+    }
+
     private static double logLikelihood(double[] eps2, double[] sigma2) {
         double sum = 0.0;
         for (int t = 0; t < eps2.length; t++) {
@@ -212,7 +379,7 @@ public class GarchService {
         notes.add(note);
         return new VolForecast(
                 VolForecast.Method.EWMA, T,
-                null, null, null, lambda,
+                null, null, null, null, lambda,
                 dailyVol, Double.NaN,
                 Math.sqrt(FORECAST_HORIZON) * dailyVol, dailyVol * SQRT_252,
                 null, notes);

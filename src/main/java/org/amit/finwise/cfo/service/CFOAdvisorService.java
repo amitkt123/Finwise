@@ -24,6 +24,7 @@ import org.amit.finwise.cfo.model.StockScorecard;
 import org.amit.finwise.cfo.model.TechnicalSnapshot;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
 import org.amit.finwise.cfo.service.analytics.PortfolioPerformanceService;
+import org.amit.finwise.cfo.service.analytics.MoneyWeightedReturnService;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.TechnicalAnalysisService;
 import org.amit.finwise.cfo.service.llm.LLMMessage;
@@ -76,8 +77,10 @@ public class CFOAdvisorService {
     private final StockPriceHistoryRepository stockPriceHistoryRepository;
     private final PolicyIntelligenceService policyIntelligenceService;
     private final PortfolioRiskService portfolioRiskService;
+    private final org.amit.finwise.cfo.service.analytics.VarBacktestService varBacktestService;
     private final FactorModelService factorModelService;
     private final PortfolioPerformanceService portfolioPerformanceService;
+    private final MoneyWeightedReturnService moneyWeightedReturnService;
     private final TechnicalAnalysisService technicalAnalysisService;
     private final IntentClassifier intentClassifier;
     private final StockIntelligenceService stockIntelligenceService;
@@ -204,7 +207,7 @@ public class CFOAdvisorService {
 
         AiInsight saved = insightRepository.save(insight);
         // DF-7: register the brief's actionable claims for the nightly scoreboard.
-        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        registerClaims(saved, userId);
         return saved;
     }
 
@@ -247,7 +250,7 @@ public class CFOAdvisorService {
                 .build();
 
         AiInsight saved = insightRepository.save(insight);
-        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        registerClaims(saved, userId);
         return saved;
     }
 
@@ -301,8 +304,37 @@ public class CFOAdvisorService {
                 .build();
 
         AiInsight saved = insightRepository.save(insight);
-        insightEvaluationService.extractClaims(saved, portfolioSymbols(userId));
+        registerClaims(saved, userId);
         return saved;
+    }
+
+    /**
+     * Register the brief's actionable claims for the nightly calibration scoreboard.
+     *
+     * <p>BPR-3: prefers the structured JSON side-channel — a second, focused LLM call
+     * that transcribes the just-generated brief into a strict-JSON claims block,
+     * constrained by {@link InsightEvaluationService#CLAIMS_JSON_SCHEMA} where the
+     * provider supports native structured output. Falls back to the legacy regex
+     * extraction when the JSON is unparseable or the call fails, so the scoreboard is
+     * never starved. Side-effect-only and fully defensive — never throws into brief
+     * generation.
+     */
+    private void registerClaims(AiInsight saved, String userId) {
+        java.util.Set<String> symbols = portfolioSymbols(userId);
+        try {
+            String claimsUser = "Extract the actionable directional claims from this brief.\n"
+                    + InsightEvaluationService.CLAIMS_PROMPT + "\n\nBrief:\n" + saved.getContent();
+            String json = llmProvider.chatJson(
+                    "You convert a financial brief into a strict-JSON claims block for scoring. "
+                            + "Output JSON only.",
+                    claimsUser, InsightEvaluationService.CLAIMS_JSON_SCHEMA);
+            int n = insightEvaluationService.extractStructuredClaims(saved, json, symbols);
+            if (n >= 0) return; // structured path succeeded (0 = no directional calls, still valid)
+        } catch (Exception e) {
+            log.warn("[CFO] Structured claim extraction failed, falling back to regex: {}",
+                    e.getMessage());
+        }
+        insightEvaluationService.extractClaims(saved, symbols);
     }
 
     // ── Goal Advice ────────────────────────────────────────────────────────────
@@ -1247,6 +1279,14 @@ public class CFOAdvisorService {
             if (!Double.isNaN(rd.trackingErrorVsNifty()))
                 ctx.append(String.format("Tracking Error vs Nifty: %.2f%%\n",
                         rd.trackingErrorVsNifty() * 100));
+            if (!Double.isNaN(rd.maxDrawdown()) && rd.maxDrawdown() < 0) {
+                ctx.append(String.format("Max Drawdown: %.2f%% (worst peak-to-trough on the value path)",
+                        rd.maxDrawdown() * 100));
+                if (!Double.isNaN(rd.calmarRatio()))
+                    ctx.append(String.format(" | Calmar Ratio: %.2f (annual return per unit of max drawdown)",
+                            rd.calmarRatio()));
+                ctx.append("\n");
+            }
 
             // Top-3 risk contributors
             ctx.append("Top Risk Contributors (% of portfolio volatility):\n");
@@ -1275,10 +1315,63 @@ public class CFOAdvisorService {
                     ctx.append(" — a TWRR without the benchmark is uninterpretable; judge skill on active return\n");
                 }
             });
+
+            // Money-weighted return — what the investor's actual rupees earned (XIRR).
+            // Complements TWRR: XIRR rewards/penalises contribution timing, TWRR strips it.
+            moneyWeightedReturnService.computeXirr(userId).ifPresent(x -> {
+                ctx.append(String.format(
+                        "XIRR (money-weighted, %s → %s): %.2f%% annualized", x.from(), x.to(),
+                        x.xirr() * 100));
+                if (!Double.isNaN(x.absoluteMwr()))
+                    ctx.append(String.format(" | %.2f%% absolute on deployed capital",
+                            x.absoluteMwr() * 100));
+                ctx.append(" — this is what your own rupees earned (counts SIP timing); "
+                        + "compare with TWRR above to judge timing vs. selection\n");
+            });
+
+            // VaR backtest — validates the VaR figures rendered just above.
+            appendVarBacktest(ctx, userId);
+
             ctx.append("\n");
 
         } catch (Exception e) {
             log.warn("[CFO] Risk decomposition failed, skipping block: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Appends a VaR backtest block (Phase A) immediately after the quant risk decomposition.
+     * Rolls a trailing-window VaR over the value-weighted portfolio return series and reports
+     * the Kupiec proportion-of-failures and Christoffersen independence verdicts, so the brief
+     * can say not just "we compute VaR" but "our VaR is coverage-tested". Silently omitted when
+     * fewer than one out-of-sample day exists beyond the rolling window.
+     */
+    private void appendVarBacktest(StringBuilder ctx, String userId) {
+        try {
+            List<org.amit.finwise.cfo.model.VarBacktestReport> reports =
+                    varBacktestService.backtest(userId);
+            if (reports.isEmpty()) return;
+
+            ctx.append("VaR Backtest (rolling out-of-sample, ")
+               .append(reports.getFirst().method())
+               .append(" VaR | window=").append(reports.getFirst().window())
+               .append("d):\n");
+            for (org.amit.finwise.cfo.model.VarBacktestReport r : reports) {
+                ctx.append(String.format(
+                        "  - %.0f%% VaR: %d breaches in %d days (%.2f%% actual vs %.2f%% expected) | "
+                                + "Kupiec p=%.3f%s | Christoffersen p=%.3f%s → %s\n",
+                        (1 - r.confidenceLevel()) * 100,
+                        r.breaches(), r.observations(),
+                        r.actualBreachRate() * 100, r.expectedBreachRate() * 100,
+                        r.kupiecPValue(), r.kupiecReject() ? " (REJECT)" : "",
+                        r.christoffersenPValue(), r.clusteringDetected() ? " (CLUSTERED)" : "",
+                        r.verdict()));
+            }
+            ctx.append("Method: trailing-window VaR re-estimated each day; breach = realized return < −VaR_t. "
+                    + "Kupiec tests average coverage (χ²₁), Christoffersen tests breach independence (χ²₁).\n");
+
+        } catch (Exception e) {
+            log.warn("[CFO] VaR backtest failed, skipping block: {}", e.getMessage());
         }
     }
 

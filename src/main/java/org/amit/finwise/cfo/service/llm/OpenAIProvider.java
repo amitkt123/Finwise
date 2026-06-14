@@ -38,14 +38,31 @@ public class OpenAIProvider implements LLMProvider {
     }
 
     @Override
+    public String chatJson(String systemPrompt, String userMessage) {
+        // Native JSON mode: response_format json_object guarantees a parseable object.
+        return chatInternal(List.of(
+                LLMMessage.system(systemPrompt),
+                LLMMessage.user(userMessage)
+        ), true);
+    }
+
+    @Override
     public String chatWithHistory(List<LLMMessage> messages) {
+        return chatInternal(messages, false);
+    }
+
+    /**
+     * @param jsonObject when true, sets {@code response_format: {type: "json_object"}}
+     *                   so the model is constrained to a single valid JSON value.
+     */
+    private String chatInternal(List<LLMMessage> messages, boolean jsonObject) {
         List<Map<String, String>> openAiMessages = messages.stream()
                 .map(m -> Map.of("role", m.role(), "content", m.content()))
                 .toList();
 
         long totalPromptLength = messages.stream().mapToLong(m -> m.content().length()).sum();
-        log.info("Sending request to OpenAI: model={}, messageCount={}, totalPromptLength={}, maxTokens={}",
-                model, messages.size(), totalPromptLength, maxTokens);
+        log.info("Sending request to OpenAI: model={}, messageCount={}, totalPromptLength={}, maxTokens={}, json={}",
+                model, messages.size(), totalPromptLength, maxTokens, jsonObject);
 
         for (int i = 0; i < messages.size(); i++) {
             LLMMessage msg = messages.get(i);
@@ -55,11 +72,14 @@ public class OpenAIProvider implements LLMProvider {
             log.debug("OpenAI message[{}] role={}: {}", i, msg.role(), preview);
         }
 
-        Map<String, Object> requestBody = Map.of(
+        Map<String, Object> requestBody = new java.util.HashMap<>(Map.of(
                 "model", model,
                 "messages", openAiMessages,
                 "max_tokens", maxTokens
-        );
+        ));
+        if (jsonObject) {
+            requestBody.put("response_format", Map.of("type", "json_object"));
+        }
 
         try {
             long startTime = System.currentTimeMillis();

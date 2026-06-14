@@ -187,6 +187,20 @@ public class PortfolioRiskService {
                             + " — insufficient benchmark overlap; market beta 1.0 assumed");
                 } else {
                     beta = bs.beta();
+                    // BPR-9: correct stale-price downward bias for illiquid names. Only
+                    // applied when the lead/lag-summed beta is materially higher — i.e. the
+                    // naive estimate was actually depressed by infrequent trading.
+                    if (riskProperties.isDimsonCorrectionEnabled()) {
+                        CovarianceEngine.DimsonBeta db =
+                                covarianceEngine.dimsonBetaStats(stockSeries, niftyReturns, 1);
+                        if (db.isUsable()
+                                && db.dimsonBeta() - db.naiveBeta() > riskProperties.getDimsonMinBetaGap()) {
+                            dataQualityNotes.add(String.format(
+                                    "DIMSON_BETA: %s β corrected %.2f → %.2f (stale-price lead/lag)",
+                                    sym, db.naiveBeta(), db.dimsonBeta()));
+                            beta = db.dimsonBeta();
+                        }
+                    }
                 }
                 perHoldingBeta.put(sym, beta);
                 portfolioBeta += w[i] * beta;
@@ -328,6 +342,19 @@ public class PortfolioRiskService {
             }
         }
 
+        // ── Max drawdown + Calmar ─────────────────────────────────────────────
+        // Build the value path from the daily return series (base 1.0) and reuse the
+        // covariance engine's drawdown routine. Calmar = annualized return ÷ |MDD|.
+        NavigableMap<LocalDate, Double> valuePath = new TreeMap<>();
+        double cumValue = 1.0;
+        for (int t = 0; t < T; t++) {
+            cumValue *= (1.0 + portfolioReturns[t]);
+            valuePath.put(commonDates.get(t), cumValue);
+        }
+        double maxDrawdown = covarianceEngine.maxDrawdown(valuePath); // ≤ 0
+        double calmarRatio = maxDrawdown < 0
+                ? annualizedReturn / Math.abs(maxDrawdown) : Double.NaN;
+
         // ── Headline ──────────────────────────────────────────────────────────
         String topNames = contributors.stream().limit(2)
                 .map(RiskDecomposition.RiskContributor::symbol)
@@ -366,6 +393,7 @@ public class PortfolioRiskService {
                 Collections.unmodifiableList(contributors),
                 diversificationRatio, enb, nameHHI, sectorHHI,
                 sharpe, sortino, trackingError,
+                maxDrawdown, calmarRatio,
                 headline
         ));
     }

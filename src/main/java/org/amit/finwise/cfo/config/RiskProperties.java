@@ -32,4 +32,23 @@ public class RiskProperties {
 
     /** Ledoit-Wolf shrinkage of the covariance matrix (Phase 2). */
     private boolean shrinkageEnabled = true;
+
+    /**
+     * Fit GJR-GARCH(1,1,1) alongside symmetric GARCH(1,1) and select the better fit
+     * by information criterion (BPR-5). When false, only symmetric GARCH is fitted.
+     */
+    private boolean asymmetricGarchEnabled = true;
+
+    /** Information criterion for symmetric-vs-asymmetric GARCH selection: AIC or BIC. */
+    private String garchSelectionCriterion = "AIC";
+
+    /**
+     * Apply the Dimson (1979) lead/lag beta correction for stale-priced illiquid names
+     * (BPR-9). When the lead/lag-summed beta materially exceeds the naive OLS beta (the
+     * downward stale-price bias), the corrected beta is used and the report notes it.
+     */
+    private boolean dimsonCorrectionEnabled = false;
+
+    /** Minimum upward gap (corrected − naive) before the Dimson beta replaces the naive one. */
+    private double dimsonMinBetaGap = 0.15;
 }

@@ -60,7 +60,7 @@ public class InsightEvaluationService {
     /** Give up scoring a claim this many days after t0 (data will never arrive). */
     private static final int ABANDON_AFTER_DAYS = 40;
     /** The version stamp on every claim; bump when the brief prompt changes materially. */
-    public static final String PROMPT_VERSION = "v1";
+    public static final String PROMPT_VERSION = "v2"; // v2: BPR-3 structured claims side-channel
 
     // Matches "Confidence: 0.7", "**Confidence:** (0.7)", "*confidence: ~0.75~", etc.
     // [^0-9]{0,30} skips markdown decorators/colons/spaces between the keyword and the value.
@@ -82,6 +82,159 @@ public class InsightEvaluationService {
 
     @Value("${cfo.rag.benchmark-index:Nifty 50}")
     private String benchmarkIndex;
+
+    // ── Structured extraction (BPR-3) ──────────────────────────────────────────
+
+    /**
+     * JSON schema for the structured claims side-channel. Providers with native
+     * structured output constrain decoding to this; others receive it as a prompt
+     * contract. {@code horizon} reuses the DF-6 trading-day horizons; {@code symbol}
+     * must be one of the user's holdings (filtered on ingest).
+     */
+    public static final String CLAIMS_JSON_SCHEMA = """
+            {
+              "type": "object",
+              "properties": {
+                "claims": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "symbol":     {"type": "string"},
+                      "direction":  {"type": "string", "enum": ["BULLISH", "BEARISH"]},
+                      "horizon":    {"type": "string", "enum": ["H1D", "H5D", "H20D"]},
+                      "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                      "thesis":     {"type": "string"},
+                      "expectedReturn": {"type": "number"}
+                    },
+                    "required": ["symbol", "direction", "horizon", "confidence"]
+                  }
+                }
+              },
+              "required": ["claims"]
+            }""";
+
+    /** Prompt fragment instructing the model to also emit the machine claims block. */
+    public static final String CLAIMS_PROMPT = """
+            Separately, output a strict-JSON object with your actionable directional calls so
+            a calibration engine can score them. For each holding you take a directional view on,
+            emit {symbol, direction (BULLISH|BEARISH), horizon (H1D|H5D|H20D), confidence 0..1,
+            thesis (one line), expectedReturn (optional, fractional e.g. 0.08 for +8%%)}. Only
+            include symbols from the portfolio. Omit hold/watch (non-directional) views.""";
+
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    /** One structured claim as emitted in the BPR-3 machine block. */
+    record StructuredClaim(String symbol, String direction, String horizon,
+                           Double confidence, String thesis, Double expectedReturn) {}
+
+    record ClaimsBlock(List<StructuredClaim> claims) {}
+
+    /**
+     * Parse and persist claims from the BPR-3 structured JSON side-channel. Preferred
+     * over {@link #extractClaims} (regex) when the provider returns parseable JSON.
+     * Returns the number persisted, or -1 when the JSON could not be parsed at all —
+     * the caller then falls back to the regex path. Never throws into brief generation.
+     */
+    public int extractStructuredClaims(AiInsight insight, String claimsJson,
+                                       Set<String> portfolioSymbols) {
+        if (insight == null || claimsJson == null || claimsJson.isBlank()
+                || portfolioSymbols == null || portfolioSymbols.isEmpty()) {
+            return -1;
+        }
+        List<InsightClaim> claims = buildStructuredClaims(insight, claimsJson, portfolioSymbols);
+        if (claims == null) return -1; // unparseable → signal regex fallback
+
+        try {
+            int written = 0;
+            for (InsightClaim c : claims) {
+                if (claimRepository.existsByInsightIdAndSymbolAndHorizon(
+                        c.getInsightId(), c.getSymbol(), c.getHorizon())) continue;
+                claimRepository.save(c);
+                written++;
+            }
+            log.info("[Eval] Extracted {} structured claims from insight {}", written, insight.getId());
+            return written;
+        } catch (RuntimeException e) {
+            log.warn("[Eval] Structured claim persistence failed for insight {}: {}",
+                    insight.getId(), e.getMessage());
+            return -1;
+        }
+    }
+
+    /**
+     * Pure parse of the structured JSON block into deduped, portfolio-filtered claims —
+     * no I/O, so it is unit-testable. Returns null when the JSON cannot be parsed at all
+     * (the caller falls back to the regex path); an empty list means valid JSON with no
+     * usable directional calls. Dedup on (symbol, horizon) keeps the highest confidence.
+     */
+    List<InsightClaim> buildStructuredClaims(AiInsight insight, String claimsJson,
+                                             Set<String> portfolioSymbols) {
+        ClaimsBlock block = parseClaimsJson(claimsJson);
+        if (block == null || block.claims() == null) return null;
+
+        Set<String> upperSymbols = portfolioSymbols.stream()
+                .map(String::toUpperCase).collect(java.util.stream.Collectors.toSet());
+
+        Map<String, InsightClaim> best = new LinkedHashMap<>();
+        for (StructuredClaim sc : block.claims()) {
+            InsightClaim c = toClaim(insight, sc, upperSymbols);
+            if (c == null) continue;
+            String key = c.getSymbol() + "|" + c.getHorizon();
+            InsightClaim prior = best.get(key);
+            if (prior != null && prior.getConfidence() >= c.getConfidence()) continue;
+            best.put(key, c);
+        }
+        return new ArrayList<>(best.values());
+    }
+
+    /** Tolerant JSON parse — strips markdown fences and locates the outermost object. */
+    private ClaimsBlock parseClaimsJson(String raw) {
+        try {
+            String s = raw.trim();
+            int start = s.indexOf('{');
+            int end = s.lastIndexOf('}');
+            if (start < 0 || end <= start) return null;
+            return objectMapper.readValue(s.substring(start, end + 1), ClaimsBlock.class);
+        } catch (Exception e) {
+            log.debug("[Eval] Structured claims JSON unparseable: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private InsightClaim toClaim(AiInsight insight, StructuredClaim sc, Set<String> upperSymbols) {
+        if (sc == null || sc.symbol() == null || sc.direction() == null
+                || sc.horizon() == null || sc.confidence() == null) return null;
+        String symbol = sc.symbol().toUpperCase();
+        if (!upperSymbols.contains(symbol)) return null;
+
+        InsightClaim.Direction dir;
+        EventOutcome.Horizon horizon;
+        try {
+            dir = InsightClaim.Direction.valueOf(sc.direction().trim().toUpperCase());
+            horizon = EventOutcome.Horizon.valueOf(sc.horizon().trim().toUpperCase());
+        } catch (IllegalArgumentException e) {
+            return null; // unknown direction/horizon enum value
+        }
+
+        String thesis = sc.thesis() == null ? null
+                : sc.thesis().length() > 500 ? sc.thesis().substring(0, 500) : sc.thesis();
+
+        return InsightClaim.builder()
+                .insightId(insight.getId())
+                .userId(insight.getUserId())
+                .insightDate(insight.getInsightDate())
+                .symbol(symbol)
+                .direction(dir)
+                .horizon(horizon)
+                .confidence(clamp01(sc.confidence()))
+                .expectedReturn(sc.expectedReturn())
+                .thesis(thesis)
+                .provider(insight.getModelUsed())
+                .promptVersion(PROMPT_VERSION)
+                .build();
+    }
 
     // ── Extraction ────────────────────────────────────────────────────────────
 
@@ -125,12 +278,17 @@ public class InsightEvaluationService {
         EventOutcome.Horizon horizon = EventOutcome.Horizon.H5D;  // default bucket
 
         // Collapse indented continuation lines (leading whitespace) into the preceding
-        // bullet so multi-line action items are processed as a single unit.
+        // bullet so multi-line action items are processed as a single unit. A nested
+        // bullet (indented but starting with its own list marker) is itself a distinct
+        // action item, so it is kept on its own line rather than merged into the header.
         String[] rawLines = insight.getContent().split("\\R");
         List<String> lines = new ArrayList<>(rawLines.length);
         for (String raw : rawLines) {
-            if (!raw.isEmpty() && (raw.charAt(0) == ' ' || raw.charAt(0) == '\t') && !lines.isEmpty()) {
-                lines.set(lines.size() - 1, lines.get(lines.size() - 1) + " " + raw.trim());
+            String trimmed = raw.trim();
+            boolean isBullet = trimmed.startsWith("-") || trimmed.startsWith("*")
+                    || trimmed.startsWith("•") || trimmed.startsWith("⏳") || trimmed.startsWith("📅");
+            if (!raw.isEmpty() && Character.isWhitespace(raw.charAt(0)) && !isBullet && !lines.isEmpty()) {
+                lines.set(lines.size() - 1, lines.get(lines.size() - 1) + " " + trimmed);
             } else {
                 lines.add(raw);
             }
@@ -320,23 +478,35 @@ public class InsightEvaluationService {
      */
     public record CalibrationRow(
             String provider, String promptVersion, EventOutcome.Horizon horizon,
-            int n, int hits, double hitRate, double avgConfidence, double brierScore) {
+            int n, int hits, double hitRate, double avgConfidence, double brierScore,
+            // BPR-10 magnitude calibration: only over claims that stated an expectedReturn.
+            int magnitudeN, double magnitudeMae, double magnitudeBias) {
 
         public String render() {
-            return String.format(
+            String base = String.format(
                     "%-10s %-4s %-4s | n=%-3d hit=%4.1f%% conf=%4.1f%% brier=%.3f",
                     provider, promptVersion, horizon, n,
                     hitRate * 100, avgConfidence * 100, brierScore);
+            if (magnitudeN > 0) {
+                base += String.format(" | mag n=%-3d MAE=%4.2f%% bias=%+.2f%%",
+                        magnitudeN, magnitudeMae * 100, magnitudeBias * 100);
+            }
+            return base;
         }
     }
 
     /** Aggregate scored claims from the last {@code sinceDays} into the scoreboard. */
     public List<CalibrationRow> calibrationReport(int sinceDays) {
-        List<InsightClaim> claims = claimRepository.findScoredSince(LocalDate.now(IST).minusDays(sinceDays));
+        return aggregate(claimRepository.findScoredSince(LocalDate.now(IST).minusDays(sinceDays)));
+    }
 
+    /** Pure aggregation of scored claims into calibration rows — unit-testable, no I/O. */
+    List<CalibrationRow> aggregate(List<InsightClaim> claims) {
         // key = provider|promptVersion|horizon
         Map<String, int[]> counts = new LinkedHashMap<>();      // [n, hits]
         Map<String, double[]> sums = new LinkedHashMap<>();     // [confSum, brierSum]
+        // BPR-10: magnitude accumulators [magN, absErrSum, signedErrSum] over claims with expectedReturn.
+        Map<String, double[]> magSums = new LinkedHashMap<>();
         Map<String, InsightClaim> sample = new LinkedHashMap<>();
 
         for (InsightClaim c : claims) {
@@ -347,11 +517,21 @@ public class InsightEvaluationService {
 
             counts.computeIfAbsent(key, _ -> new int[2]);
             sums.computeIfAbsent(key, _ -> new double[2]);
+            magSums.computeIfAbsent(key, _ -> new double[3]);
             sample.putIfAbsent(key, c);
             counts.get(key)[0]++;
             counts.get(key)[1] += outcome;
             sums.get(key)[0] += conf;
             sums.get(key)[1] += (conf - outcome) * (conf - outcome);
+
+            // Magnitude calibration: realised holding-period return vs. the stated
+            // expected return. Only counted when both are present.
+            if (c.getExpectedReturn() != null && c.getRawReturn() != null) {
+                double err = c.getRawReturn() - c.getExpectedReturn(); // realised − expected
+                magSums.get(key)[0] += 1;
+                magSums.get(key)[1] += Math.abs(err);
+                magSums.get(key)[2] += err;
+            }
         }
 
         List<CalibrationRow> rows = new ArrayList<>();
@@ -359,11 +539,15 @@ public class InsightEvaluationService {
             int n = counts.get(key)[0];
             int hits = counts.get(key)[1];
             InsightClaim s = sample.get(key);
+            int magN = (int) magSums.get(key)[0];
+            double mae = magN == 0 ? 0 : magSums.get(key)[1] / magN;
+            double bias = magN == 0 ? 0 : magSums.get(key)[2] / magN;
             rows.add(new CalibrationRow(
                     s.getProvider(), s.getPromptVersion(), s.getHorizon(),
                     n, hits, n == 0 ? 0 : (double) hits / n,
                     n == 0 ? 0 : sums.get(key)[0] / n,
-                    n == 0 ? 0 : sums.get(key)[1] / n));
+                    n == 0 ? 0 : sums.get(key)[1] / n,
+                    magN, mae, bias));
         }
         return rows;
     }

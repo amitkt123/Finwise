@@ -63,6 +63,19 @@ public class InsightClaim {
     @Column(nullable = false)
     private Double confidence;
 
+    /**
+     * Optional self-reported expected holding-period return for the horizon
+     * (e.g. 0.08 = +8%), parsed from the BPR-3 structured claims block. Null for
+     * regex-extracted claims that state only a direction. Scored for magnitude
+     * calibration by the nightly job once the horizon matures (BPR-10).
+     */
+    @Column(name = "expected_return")
+    private Double expectedReturn;
+
+    /** Free-text thesis from the structured block; null for regex-extracted claims. */
+    @Column(name = "thesis", length = 500)
+    private String thesis;
+
     /** Brief provider (claude/openai/ollama/…) — a scoreboard dimension. */
     @Column(length = 20)
     private String provider;

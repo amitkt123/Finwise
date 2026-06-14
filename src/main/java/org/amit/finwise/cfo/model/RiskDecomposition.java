@@ -56,6 +56,10 @@ public record RiskDecomposition(
         double sortinoRatio,
         double trackingErrorVsNifty,    // std(r_p − r_Nifty) × √252; NaN if benchmark unavailable
 
+        // ── Drawdown ─────────────────────────────────────────────────────────────
+        double maxDrawdown,             // worst peak-to-trough on the value path; ≤ 0 (−0.25 = −25%)
+        double calmarRatio,             // annualized return ÷ |max drawdown|; NaN when drawdown = 0
+
         // ── Headline for LLM ─────────────────────────────────────────────────────
         String headline
 

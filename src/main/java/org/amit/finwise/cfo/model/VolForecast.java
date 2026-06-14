@@ -22,7 +22,8 @@ public record VolForecast(
         Double omega,                 // GARCH only; null under EWMA fallback
         Double alpha,
         Double beta,
-        double persistence,           // alpha+beta for GARCH; lambda for EWMA
+        Double leverageGamma,         // GJR-GARCH leverage coeff γ; null for symmetric GARCH / EWMA
+        double persistence,           // GARCH: α+β (GJR: α+γ/2+β); λ for EWMA
 
         double conditionalDailyVol,   // √sigma2_{t+1} (one-step-ahead)
         double longRunDailyVol,       // √sigma2_LR; NaN under EWMA (no mean reversion)
@@ -32,9 +33,14 @@ public record VolForecast(
         Double logLikelihood,         // GARCH only; null under EWMA fallback
         List<String> notes
 ) {
-    public enum Method { GARCH, EWMA }
+    public enum Method { GARCH, GJR_GARCH, EWMA }
 
     public boolean isGarch() {
-        return method == Method.GARCH;
+        return method == Method.GARCH || method == Method.GJR_GARCH;
+    }
+
+    /** True when the asymmetric (leverage-effect) model was selected. */
+    public boolean isAsymmetric() {
+        return method == Method.GJR_GARCH;
     }
 }

@@ -76,9 +76,19 @@ public class FactorModelService {
         FactorReturnService.FactorSet factors = factorsOpt.get();
 
         List<String> dataQualityNotes = new ArrayList<>();
-        if (factors.size() == null) {
-            dataQualityNotes.add("SIZE_FACTOR_UNAVAILABLE: no " + factorProperties.getMidcapIndex()
-                    + " history — regressions use MKT + sector only");
+        // BPR-6: prefer true Fama-French SMB/HML over the circular own-sector + index-spread
+        // SIZE factors when the fundamentals cross-section is deep enough.
+        boolean useFamaFrench = factors.hasFamaFrench();
+        if (useFamaFrench) {
+            dataQualityNotes.add(factors.famaFrenchNote() != null ? factors.famaFrenchNote()
+                    : "FAMA_FRENCH: regressing on MKT + SMB + HML (cross-sectional style factors)");
+        } else {
+            dataQualityNotes.add("FAMA_FRENCH_FALLBACK: true SMB/HML unavailable (fundamentals thin) "
+                    + "— using index-spread SIZE + own-sector proxy factors");
+            if (factors.size() == null) {
+                dataQualityNotes.add("SIZE_FACTOR_UNAVAILABLE: no " + factorProperties.getMidcapIndex()
+                        + " history — regressions use MKT + sector only");
+            }
         }
 
         Map<String, NavigableMap<LocalDate, Double>> stockReturns =
@@ -98,28 +108,38 @@ public class FactorModelService {
             }
 
             String sector = resolveSector(sym, fallbackSector);
-            String sectorIdx = factorProperties.indexForSector(sector).orElse(null);
-            NavigableMap<LocalDate, Double> sectorSpread =
-                    sectorIdx != null ? factors.sectorSpreads().get(sectorIdx) : null;
-            if (sectorIdx != null && sectorSpread == null) {
-                dataQualityNotes.add("SECTOR_FACTOR_MISSING: " + sym + " sector '" + sector
-                        + "' maps to " + sectorIdx + " but the index has no return history — MKT"
-                        + (factors.size() != null ? "+SIZE" : "") + " only");
-                sectorIdx = null;
-            }
 
-            // Regressor set for THIS holding, in canonical order
+            // Regressor set for THIS holding, in canonical order.
             List<String> names = new ArrayList<>();
             List<NavigableMap<LocalDate, Double>> regressors = new ArrayList<>();
             names.add(FactorReturnService.MKT_FACTOR);
             regressors.add(factors.mkt());
-            if (factors.size() != null) {
-                names.add(FactorReturnService.SIZE_FACTOR);
-                regressors.add(factors.size());
-            }
-            if (sectorIdx != null) {
-                names.add(sectorIdx);
-                regressors.add(sectorSpread);
+
+            String sectorIdx = null;
+            if (useFamaFrench) {
+                // True style factors — no circular own-sector regressor.
+                names.add(FactorReturnService.SMB_FACTOR);
+                regressors.add(factors.smb());
+                names.add(FactorReturnService.HML_FACTOR);
+                regressors.add(factors.hml());
+            } else {
+                sectorIdx = factorProperties.indexForSector(sector).orElse(null);
+                NavigableMap<LocalDate, Double> sectorSpread =
+                        sectorIdx != null ? factors.sectorSpreads().get(sectorIdx) : null;
+                if (sectorIdx != null && sectorSpread == null) {
+                    dataQualityNotes.add("SECTOR_FACTOR_MISSING: " + sym + " sector '" + sector
+                            + "' maps to " + sectorIdx + " but the index has no return history — MKT"
+                            + (factors.size() != null ? "+SIZE" : "") + " only");
+                    sectorIdx = null;
+                }
+                if (factors.size() != null) {
+                    names.add(FactorReturnService.SIZE_FACTOR);
+                    regressors.add(factors.size());
+                }
+                if (sectorIdx != null) {
+                    names.add(sectorIdx);
+                    regressors.add(sectorSpread);
+                }
             }
 
             HoldingFit fit = regress(sym, sector, sectorIdx, series, names, regressors, minObs);
@@ -155,10 +175,15 @@ public class FactorModelService {
         // Canonical factor order: MKT, SIZE, then sector tickers actually used.
         List<String> factorNames = new ArrayList<>();
         factorNames.add(FactorReturnService.MKT_FACTOR);
-        if (factors.size() != null) factorNames.add(FactorReturnService.SIZE_FACTOR);
-        fits.stream().map(f -> f.sectorFactor).filter(Objects::nonNull)
-                .collect(Collectors.toCollection(TreeSet::new))
-                .forEach(factorNames::add);
+        if (useFamaFrench) {
+            factorNames.add(FactorReturnService.SMB_FACTOR);
+            factorNames.add(FactorReturnService.HML_FACTOR);
+        } else {
+            if (factors.size() != null) factorNames.add(FactorReturnService.SIZE_FACTOR);
+            fits.stream().map(f -> f.sectorFactor).filter(Objects::nonNull)
+                    .collect(Collectors.toCollection(TreeSet::new))
+                    .forEach(factorNames::add);
+        }
 
         Map<String, Double> portfolioBetas = new LinkedHashMap<>();
         for (String factor : factorNames) {
@@ -176,6 +201,8 @@ public class FactorModelService {
             factorSeries.put(factor, switch (factor) {
                 case FactorReturnService.MKT_FACTOR -> factors.mkt();
                 case FactorReturnService.SIZE_FACTOR -> factors.size();
+                case FactorReturnService.SMB_FACTOR -> factors.smb();
+                case FactorReturnService.HML_FACTOR -> factors.hml();
                 default -> factors.sectorSpreads().get(factor);
             });
         }

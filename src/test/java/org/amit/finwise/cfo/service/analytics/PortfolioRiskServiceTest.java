@@ -149,6 +149,41 @@ class PortfolioRiskServiceTest {
     }
 
     @Test
+    void maxDrawdown_isZeroForMonotonicUpSeriesAndCalmarFollowsReturn() {
+        // Both holdings rise every day (constant +0.4% daily) → no peak-to-trough → MDD 0.
+        when(investmentRepository.findActiveInvestments(USER))
+                .thenReturn(List.of(inv("AAA", 50_000), inv("BBB", 50_000)));
+        LocalDate[] d = dates(N);
+        Map<String, NavigableMap<LocalDate, Double>> returns = new LinkedHashMap<>();
+        returns.put("AAA", series(d, i -> 0.004));
+        returns.put("BBB", series(d, i -> 0.004));
+        returns.put(StockPriceService.NIFTY_SYMBOL, series(d, i -> ((i % 3) - 1) * 0.003));
+        when(returnSeriesService.getReturnSeries(anyList(), any(LocalDate.class))).thenReturn(returns);
+
+        RiskDecomposition rd = service.compute(USER).orElseThrow();
+        assertEquals(0.0, rd.maxDrawdown(), 1e-12, "monotonic-up series has no drawdown");
+        assertTrue(Double.isNaN(rd.calmarRatio()), "Calmar is undefined when drawdown is 0");
+    }
+
+    @Test
+    void maxDrawdown_capturesKnownPeakToTrough() {
+        when(investmentRepository.findActiveInvestments(USER))
+                .thenReturn(List.of(inv("AAA", 50_000), inv("BBB", 50_000)));
+        // Up for 10 days, then a single −20% day, then flat. The value path peaks just
+        // before the crash and the trough is the crash day → MDD ≈ −20%.
+        LocalDate[] d = dates(N);
+        Map<String, NavigableMap<LocalDate, Double>> returns = new LinkedHashMap<>();
+        returns.put("AAA", series(d, i -> i == 20 ? -0.20 : (i < 20 ? 0.003 : 0.0)));
+        returns.put("BBB", series(d, i -> i == 20 ? -0.20 : (i < 20 ? 0.003 : 0.0)));
+        returns.put(StockPriceService.NIFTY_SYMBOL, series(d, i -> ((i % 3) - 1) * 0.003));
+        when(returnSeriesService.getReturnSeries(anyList(), any(LocalDate.class))).thenReturn(returns);
+
+        RiskDecomposition rd = service.compute(USER).orElseThrow();
+        assertEquals(-0.20, rd.maxDrawdown(), 1e-9, "single −20% day defines the drawdown");
+        assertFalse(Double.isNaN(rd.calmarRatio()), "Calmar must be finite when drawdown < 0");
+    }
+
+    @Test
     void interpolatedQuantile_matchesR7HandComputation() {
         // T=20, values 1..20, p=0.05: h = 19×0.05 = 0.95 → 1 + 0.95×(2−1) = 1.95
         double[] sorted = new double[20];
