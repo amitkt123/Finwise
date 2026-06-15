@@ -8,6 +8,9 @@ import org.amit.finwise.cfo.model.FactorRiskReport.HoldingFactorExposure;
 import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.apache.commons.math3.linear.Array2DRowRealMatrix;
+import org.apache.commons.math3.linear.LUDecomposition;
+import org.apache.commons.math3.linear.RealMatrix;
 import org.apache.commons.math3.stat.StatUtils;
 import org.apache.commons.math3.stat.regression.OLSMultipleLinearRegression;
 import org.springframework.stereotype.Service;
@@ -271,7 +274,8 @@ public class FactorModelService {
                         f.alphaDaily * ANNUAL_DAYS,
                         f.rSquared,
                         Math.sqrt(f.errVarDaily) * SQRT_252,
-                        f.observations))
+                        f.observations,
+                        f.hacLag))
                 .sorted(Comparator.comparingDouble(HoldingFactorExposure::weight).reversed())
                 .toList();
 
@@ -337,7 +341,12 @@ public class FactorModelService {
             OLSMultipleLinearRegression ols = new OLSMultipleLinearRegression();
             ols.newSampleData(y, x);
             double[] b = ols.estimateRegressionParameters();          // [α, β₁..βₖ]
-            double[] se = ols.estimateRegressionParametersStandardErrors();
+
+            // Newey-West HAC standard errors (heteroskedasticity- and
+            // autocorrelation-consistent). Daily factor residuals are routinely
+            // serially correlated, which biases OLS SE downward; HAC fixes the t.
+            int lag = hacLag(T);
+            double[] se = neweyWestStandardErrors(x, ols.estimateResiduals(), lag);
 
             Map<String, Double> betas = new LinkedHashMap<>();
             Map<String, Double> tStats = new LinkedHashMap<>();
@@ -348,11 +357,61 @@ public class FactorModelService {
 
             return new HoldingFit(symbol, sector, sectorFactor, betas, tStats,
                     b[0], ols.calculateRSquared(), ols.estimateErrorVariance(),
-                    T, common.getFirst(), common.getLast());
+                    T, lag, common.getFirst(), common.getLast());
         } catch (Exception e) {
             log.warn("[FactorModel] Regression failed for {}: {}", symbol, e.getMessage());
             return null;
         }
+    }
+
+    /** Automatic Bartlett-kernel bandwidth: L = ⌊4·(T/100)^(2/9)⌋ (Newey-West 1994). */
+    static int hacLag(int T) {
+        return (int) Math.floor(4.0 * Math.pow(T / 100.0, 2.0 / 9.0));
+    }
+
+    /**
+     * Newey-West HAC standard errors for the OLS parameter vector [α, β₁..βₖ].
+     *
+     * V = (ZᵀZ)⁻¹ · S · (ZᵀZ)⁻¹, where Z is the design matrix WITH an intercept
+     * column and the "meat" S is the long-run residual covariance
+     *   S = Ω₀ + Σ_{l=1}^{L} w_l (Ω_l + Ω_lᵀ),  Ω_l = Σ_{t>l} u_t u_{t-l} z_t z_{t-l}ᵀ
+     * with Bartlett weights w_l = 1 − l/(L+1). L=0 reproduces White's HC0. SE is
+     * the square root of the diagonal of V, in the same order as the OLS params.
+     */
+    static double[] neweyWestStandardErrors(double[][] x, double[] residuals, int lag) {
+        int T = x.length;
+        int p = x[0].length + 1;                  // +1 for the intercept column
+
+        double[][] z = new double[T][p];
+        for (int t = 0; t < T; t++) {
+            z[t][0] = 1.0;
+            System.arraycopy(x[t], 0, z[t], 1, p - 1);
+        }
+
+        double[][] s = new double[p][p];
+        for (int t = 0; t < T; t++) {
+            double u2 = residuals[t] * residuals[t];
+            for (int a = 0; a < p; a++)
+                for (int c = 0; c < p; c++)
+                    s[a][c] += u2 * z[t][a] * z[t][c];
+        }
+        for (int l = 1; l <= lag; l++) {
+            double w = 1.0 - (double) l / (lag + 1);
+            for (int t = l; t < T; t++) {
+                double uu = residuals[t] * residuals[t - l];
+                for (int a = 0; a < p; a++)
+                    for (int c = 0; c < p; c++)
+                        s[a][c] += w * uu * (z[t][a] * z[t - l][c] + z[t - l][a] * z[t][c]);
+            }
+        }
+
+        RealMatrix Z = new Array2DRowRealMatrix(z, false);
+        RealMatrix bread = new LUDecomposition(Z.transpose().multiply(Z)).getSolver().getInverse();
+        RealMatrix v = bread.multiply(new Array2DRowRealMatrix(s, false)).multiply(bread);
+
+        double[] se = new double[p];
+        for (int j = 0; j < p; j++) se[j] = Math.sqrt(Math.max(0.0, v.getEntry(j, j)));
+        return se;
     }
 
     /** Annualized vol of the included-weights portfolio return series — the wᵀΣw figure. */
@@ -401,6 +460,6 @@ public class FactorModelService {
             String symbol, String sector, String sectorFactor,
             Map<String, Double> betas, Map<String, Double> tStats,
             double alphaDaily, double rSquared, double errVarDaily,
-            int observations, LocalDate from, LocalDate to
+            int observations, int hacLag, LocalDate from, LocalDate to
     ) {}
 }

@@ -255,6 +255,3 @@ sub-threshold trims are suppressed. Unit test.
 3. Rendered block carries method · inputs · window · caveats.
 4. Degrades safely (empty source → skipped card, never a fabricated number).
 
-## Suggested first PR
-**Phase A (VaR backtest) + B1 (card model + renderer)** — smallest shippable slice that
-both validates an existing number and lays the card backbone everything else renders into.

@@ -87,6 +87,9 @@ public class CFOAdvisorService {
     private final org.amit.finwise.investment.service.TaxHarvestingService taxHarvestingService;
     private final org.amit.finwise.cfo.service.analytics.LookThroughService lookThroughService;
     private final org.amit.finwise.cfo.service.analytics.AttributionService attributionService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
+    private final org.amit.finwise.cfo.service.insight.InsightNarrationService insightNarrationService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardRenderer insightCardRenderer;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -195,6 +198,7 @@ public class CFOAdvisorService {
                 """.formatted(today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
 
         String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
+        content = appendInsightCardSection(content, userId);
 
         AiInsight insight = AiInsight.builder()
                 .userId(userId)
@@ -293,6 +297,7 @@ public class CFOAdvisorService {
                 """.formatted(label, today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
 
         String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
+        content = appendInsightCardSection(content, userId);
 
         AiInsight insight = AiInsight.builder()
                 .userId(userId)
@@ -319,6 +324,29 @@ public class CFOAdvisorService {
      * never starved. Side-effect-only and fully defensive — never throws into brief
      * generation.
      */
+    /**
+     * Honest-Insights Phase B4: append the Java-rendered insight-card section to a brief.
+     *
+     * <p>Cards carry every number in Java ({@code InsightCardService}); the LLM only writes the
+     * one-line interpretation per card, validated to introduce no new figure
+     * ({@code InsightNarrationService}). The section is rendered by {@code InsightCardRenderer}
+     * and includes the machine-parseable action lines that {@code extractClaims} consumes, so
+     * the calibration scoreboard now scores Java-authoritative calls. Fully defensive: any
+     * failure leaves the brief unchanged rather than aborting generation.
+     */
+    private String appendInsightCardSection(String content, String userId) {
+        try {
+            var cards = insightCardService.generate(userId);
+            var narrated = insightNarrationService.narrate(cards);
+            String section = insightCardRenderer.toMarkdownBrief(
+                    "## Insight Cards (Java-computed · LLM interprets only)", narrated);
+            return content + "\n\n" + section;
+        } catch (Exception e) {
+            log.warn("[CFO] Insight-card section failed, brief left unchanged: {}", e.getMessage());
+            return content;
+        }
+    }
+
     private void registerClaims(AiInsight saved, String userId) {
         java.util.Set<String> symbols = portfolioSymbols(userId);
         try {
@@ -1424,7 +1452,11 @@ public class CFOAdvisorService {
                 }
             }
 
-            ctx.append("Per-holding factor betas (* = |t|≥2; t-stats are HAC-naive):\n");
+            String hacLags = fr.holdings().stream()
+                    .map(h -> String.valueOf(h.hacLag()))
+                    .distinct().collect(Collectors.joining("/"));
+            ctx.append("Per-holding factor betas (* = |t|≥2; t-stats are Newey-West HAC, L="
+                    + hacLags + "):\n");
             fr.holdings().stream().limit(8).forEach(h -> {
                 StringBuilder line = new StringBuilder(String.format(
                         "  - %s (w %.1f%%): MKT %.2f%s", h.symbol(), h.weight() * 100,

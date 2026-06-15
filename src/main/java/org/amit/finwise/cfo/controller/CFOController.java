@@ -50,6 +50,7 @@ public class CFOController {
     private final MfPortfolioImportService mfPortfolioImportService;
     private final LookThroughService lookThroughService;
     private final AttributionService attributionService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -206,6 +207,17 @@ public class CFOController {
         return attributionService.compute(defaultUserId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * GET /api/cfo/insight-cards
+     * Typed, Java-rendered insight cards (Honest-Insights Phase B): each carries its figures
+     * with value · method · inputs · window · caveats, ordered highest-severity first. Numbers
+     * are computed in Java; the LLM only narrates. Empty list when the portfolio lacks data.
+     */
+    @GetMapping("/insight-cards")
+    public ResponseEntity<java.util.List<org.amit.finwise.cfo.model.InsightCard>> getInsightCards() {
+        return ResponseEntity.ok(insightCardService.generate(defaultUserId));
     }
 
     // ── News ──────────────────────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import org.amit.finwise.cfo.model.FactorRiskReport;
 import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.apache.commons.math3.stat.regression.OLSMultipleLinearRegression;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -164,6 +165,80 @@ class FactorModelServiceTest {
         assertNull(h.betaSector());
         assertNotNull(h.betaSize(), "SIZE stays in the regression for unmapped sectors");
         assertEquals(List.of("MKT", "SIZE"), fr.factorNames());
+    }
+
+    // ── Newey-West HAC (Phase D) ────────────────────────────────────────────────
+
+    @Test
+    void hacLag_followsNeweyWest1994Rule() {
+        // L = ⌊4·(T/100)^(2/9)⌋
+        assertEquals(4, FactorModelService.hacLag(200));
+        assertEquals(3, FactorModelService.hacLag(50));
+        assertEquals((int) Math.floor(4.0 * Math.pow(252 / 100.0, 2.0 / 9.0)),
+                FactorModelService.hacLag(252));
+    }
+
+    @Test
+    void ar1Errors_hacStandardErrorsExceedOls_andSignificanceCanShift() {
+        // A persistent (AR(1)) regressor with a flat true slope (β = 0) and strongly
+        // positively autocorrelated AR(1) errors — the realistic case for daily factor
+        // returns. The score xₜ·uₜ is then serially correlated, so OLS SE understates
+        // uncertainty and HAC must inflate it (|t_HAC| < |t_OLS|). With an i.i.d.
+        // regressor the slope's score is white and HAC ≈ OLS, which is why both the
+        // regressor AND the errors are made persistent here.
+        int n = 200;
+        double rhoE = 0.7, phiX = 0.7;
+        Random rng = new Random(2026);
+
+        double[] xCol = new double[n];
+        double[] y = new double[n];
+        double e = 0.0, xPrev = 0.0;
+        for (int t = 0; t < n; t++) {
+            xPrev = phiX * xPrev + rng.nextGaussian();   // AR(1) regressor
+            xCol[t] = xPrev;
+            e = rhoE * e + rng.nextGaussian();           // AR(1) residual
+            y[t] = 0.0 + e;                              // true slope is zero
+        }
+        double[][] x = new double[n][1];
+        for (int t = 0; t < n; t++) x[t][0] = xCol[t];
+
+        OLSMultipleLinearRegression ols = new OLSMultipleLinearRegression();
+        ols.newSampleData(y, x);
+        double[] beta = ols.estimateRegressionParameters();
+        double[] olsSe = ols.estimateRegressionParametersStandardErrors();
+
+        int lag = FactorModelService.hacLag(n);
+        double[] hacSe = FactorModelService.neweyWestStandardErrors(x, ols.estimateResiduals(), lag);
+
+        // Slope is index 1 (index 0 is the intercept) in both vectors.
+        assertTrue(hacSe[1] > olsSe[1],
+                "HAC SE must exceed OLS SE under positive autocorrelation: HAC="
+                        + hacSe[1] + " OLS=" + olsSe[1]);
+
+        // Lag-0 HAC reduces to White's HC0 and must not match the autocorrelation-
+        // corrected SE — confirms the Bartlett-weighted lag terms actually fire.
+        double[] hc0 = FactorModelService.neweyWestStandardErrors(x, ols.estimateResiduals(), 0);
+        assertTrue(hacSe[1] > hc0[1], "Bartlett lag terms must widen the SE beyond HC0");
+
+        // Significance flag can flip: t inflates from OLS to HAC, so a borderline
+        // OLS-significant slope can become HAC-insignificant.
+        double tOls = beta[1] / olsSe[1];
+        double tHac = beta[1] / hacSe[1];
+        assertTrue(Math.abs(tHac) < Math.abs(tOls),
+                "HAC t must shrink toward zero relative to OLS t");
+    }
+
+    @Test
+    void renderableReport_carriesHacLagPerHolding() {
+        Map<String, NavigableMap<LocalDate, Double>> master = simulatedMarket(new Random(42), true);
+        stubReturnSeries(master);
+        when(investmentRepository.findActiveInvestments(USER)).thenReturn(List.of(inv("TCS", 100_000)));
+        when(symbolExtractorService.getSymbolEntry("TCS")).thenReturn(entry("TCS", "IT"));
+
+        FactorRiskReport fr = service.compute(USER).orElseThrow();
+
+        assertEquals(FactorModelService.hacLag(T), fr.holdings().getFirst().hacLag(),
+                "rendered HAC lag must be the Newey-West bandwidth for the holding's T");
     }
 
     // ── Fixture generation ────────────────────────────────────────────────────

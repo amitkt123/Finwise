@@ -16,8 +16,9 @@ import java.util.Map;
  * systematic + idiosyncratic variance is reported AGAINST the direct wᵀΣw figure
  * (directVolAnnualized); the gap is estimation noise and is never forced to reconcile.
  *
- * All t-stats are HAC-naive (no Newey-West correction) — treat |t| ≥ 2 as the
- * display threshold for "significant", nothing more.
+ * t-stats use Newey-West HAC (heteroskedasticity- and autocorrelation-consistent)
+ * standard errors with an automatic Bartlett bandwidth L = ⌊4·(T/100)^(2/9)⌋ —
+ * treat |t| ≥ 2 as the display threshold for "significant", nothing more.
  */
 public record FactorRiskReport(
         List<String> includedSymbols,
@@ -55,11 +56,12 @@ public record FactorRiskReport(
             double betaMkt,
             Double betaSize,
             Double betaSector,
-            Map<String, Double> tStats,      // factor → t-stat (HAC-naive)
+            Map<String, Double> tStats,      // factor → t-stat (Newey-West HAC)
             double alphaAnnualized,          // daily intercept × 252
             double rSquared,
             double idioVolAnnualized,        // σ_ε·√252 from residual variance
-            int observations
+            int observations,
+            int hacLag                       // Bartlett bandwidth L used for the HAC t-stats
     ) {
         public boolean isSignificant(String factor) {
             Double t = tStats.get(factor);
