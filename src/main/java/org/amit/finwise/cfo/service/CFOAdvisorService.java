@@ -87,6 +87,8 @@ public class CFOAdvisorService {
     private final org.amit.finwise.investment.service.TaxHarvestingService taxHarvestingService;
     private final org.amit.finwise.cfo.service.analytics.LookThroughService lookThroughService;
     private final org.amit.finwise.cfo.service.analytics.AttributionService attributionService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardRenderer insightCardRenderer;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -201,7 +203,7 @@ public class CFOAdvisorService {
                 .insightDate(today)
                 .insightType(AiInsight.InsightType.DAILY_BRIEF)
                 .title("Daily CFO Brief - " + today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")))
-                .content(content)
+                .content(appendInsightCardSection(content, userId))
                 .modelUsed(llmProvider.providerName())
                 .build();
 
@@ -299,13 +301,35 @@ public class CFOAdvisorService {
                 .insightDate(today)
                 .insightType(AiInsight.InsightType.MARKET_INSIGHT)
                 .title(label + " Market Insight - " + today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")))
-                .content(content)
+                .content(appendInsightCardSection(content, userId))
                 .modelUsed(llmProvider.providerName())
                 .build();
 
         AiInsight saved = insightRepository.save(insight);
         registerClaims(saved, userId);
         return saved;
+    }
+
+    /**
+     * Appends rendered InsightCard blocks to a brief's markdown content.
+     * Fully defensive — if card generation fails the original content is returned unchanged.
+     */
+    private String appendInsightCardSection(String content, String userId) {
+        try {
+            java.util.List<org.amit.finwise.cfo.model.InsightCard> cards =
+                    insightCardService.generate(userId);
+            if (cards.isEmpty()) return content;
+
+            StringBuilder sb = new StringBuilder(content);
+            sb.append("\n\n---\n\n## Quantitative Insight Cards\n\n");
+            for (org.amit.finwise.cfo.model.InsightCard card : cards) {
+                sb.append(insightCardRenderer.renderCard(card));
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            log.warn("[CFO] appendInsightCardSection failed: {}", e.getMessage());
+            return content;
+        }
     }
 
     /**

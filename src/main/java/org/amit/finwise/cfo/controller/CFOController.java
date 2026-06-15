@@ -50,6 +50,7 @@ public class CFOController {
     private final MfPortfolioImportService mfPortfolioImportService;
     private final LookThroughService lookThroughService;
     private final AttributionService attributionService;
+    private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
 
     @Value("${cfo.user.id}")
     private String defaultUserId;
@@ -206,6 +207,16 @@ public class CFOController {
         return attributionService.compute(defaultUserId)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    /**
+     * GET /api/cfo/insight-cards
+     * Ordered list of quantitative InsightCards (ALERT first, then INFO).
+     * Each card carries Java-authored numbers and an LLM-validated narration.
+     */
+    @GetMapping("/insight-cards")
+    public ResponseEntity<java.util.List<org.amit.finwise.cfo.model.InsightCard>> getInsightCards() {
+        return ResponseEntity.ok(insightCardService.generate(defaultUserId));
     }
 
     // ── News ──────────────────────────────────────────────────────────────────

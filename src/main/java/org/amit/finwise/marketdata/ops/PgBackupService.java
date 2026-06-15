@@ -96,7 +96,7 @@ public class PgBackupService {
 
             Process proc = pb.start();
             String output = new String(proc.getInputStream().readAllBytes());
-            boolean finished = proc.waitFor(Duration.ofMinutes(timeoutMinutes));
+            boolean finished = proc.waitFor(timeoutMinutes, java.util.concurrent.TimeUnit.MINUTES);
             if (!finished) {
                 proc.destroyForcibly();
                 throw new IOException("pg_dump timed out after " + timeoutMinutes + " min");
