@@ -5,6 +5,7 @@ import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.model.RiskDecomposition.RiskContributor;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
+import org.amit.finwise.cfo.service.analytics.StressScenarioService;
 import org.amit.finwise.cfo.service.analytics.VarBacktestService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,6 +33,7 @@ class InsightCardServiceTest {
     @Mock PortfolioRiskService portfolioRiskService;
     @Mock FactorModelService factorModelService;
     @Mock VarBacktestService varBacktestService;
+    @Mock StressScenarioService stressScenarioService;
     @Mock ConfidenceCalibrationService calibrationService;
 
     private InsightCardService service() {
@@ -39,8 +41,9 @@ class InsightCardServiceTest {
         lenient().when(calibrationService.report()).thenReturn(List.of());
         lenient().when(calibrationService.cohort(any(), any(), any()))
                 .thenReturn(new ConfidenceCalibrationService.Cohort(null, null, 0, 0, 0.0));
+        lenient().when(stressScenarioService.stress(any())).thenReturn(List.of());
         return new InsightCardService(portfolioRiskService, factorModelService,
-                varBacktestService, calibrationService);
+                varBacktestService, stressScenarioService, calibrationService);
     }
 
     @Test

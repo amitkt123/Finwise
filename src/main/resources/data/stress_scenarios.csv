@@ -1,0 +1,40 @@
+# Honest-Insights Phase E — named historical shock scenarios applied to current weights.
+#
+# FORMAT: scenario,label,factor,shockPct
+#   scenario  — stable id (one block of rows per scenario)
+#   label     — human-readable name, taken from the first row of the block
+#   factor    — must match a FactorModelService factor name:
+#                 MKT        = Nifty 50 return  (this row is also the "index shock"
+#                              used for the beta-only cross-check)
+#                 SIZE       = midcap−Nifty SPREAD return
+#                 ^NSEBANK … = sector index − Nifty SPREAD return
+#               Sector/SIZE shocks are SPREADS (factor − Nifty) so they line up with the
+#               spread-betas in FactorRiskReport.portfolioFactorBetas. A factor a portfolio
+#               has no beta for is ignored; a factor not listed for a scenario contributes 0.
+#   shockPct  — the factor return in percent (negative = down)
+#
+# Figures are representative single-day replays, not exact tick history.
+#
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),MKT,-13.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),SIZE,-2.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^NSEBANK,-3.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXENERGY,-2.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXMETAL,-2.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXAUTO,-1.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXIT,2.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXPHARMA,3.0
+COVID_2020_03_23,COVID crash replay (23 Mar 2020),^CNXFMCG,2.5
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),MKT,-5.93
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),SIZE,-4.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^NSEBANK,-2.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^CNXENERGY,-6.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^CNXMETAL,-2.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^CNXIT,4.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^CNXPHARMA,3.0
+ELECTION_2024_06_04,Election result shock (4 Jun 2024),^CNXFMCG,4.0
+TAPER_2013,Taper tantrum (Aug 2013),MKT,-4.0
+TAPER_2013,Taper tantrum (Aug 2013),SIZE,-3.0
+TAPER_2013,Taper tantrum (Aug 2013),^NSEBANK,-4.0
+TAPER_2013,Taper tantrum (Aug 2013),^CNXIT,5.0
+TAPER_2013,Taper tantrum (Aug 2013),^CNXPHARMA,3.0
+PARAMETRIC_2SIGMA,Parametric -2sigma Nifty day,MKT,-2.0

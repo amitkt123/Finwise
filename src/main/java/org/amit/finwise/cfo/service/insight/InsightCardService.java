@@ -11,6 +11,8 @@ import org.amit.finwise.cfo.model.VolForecast;
 import org.amit.finwise.cfo.service.InsightEvaluationService.CalibrationRow;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
+import org.amit.finwise.cfo.service.analytics.StressScenarioService;
+import org.amit.finwise.cfo.service.analytics.StressScenarioService.StressResult;
 import org.amit.finwise.cfo.service.analytics.VarBacktestService;
 import org.springframework.stereotype.Service;
 
@@ -40,12 +42,16 @@ public class InsightCardService {
     private final PortfolioRiskService portfolioRiskService;
     private final FactorModelService factorModelService;
     private final VarBacktestService varBacktestService;
+    private final StressScenarioService stressScenarioService;
     private final ConfidenceCalibrationService calibrationService;
 
     /** %RC at/above which trimming a single contributor becomes an ACTION rather than WATCH. */
     private static final double CONCENTRATED_RC = 0.25;
     /** Sector HHI above which sector concentration is flagged. */
     private static final double SECTOR_HHI_ALERT = 0.30;
+    /** Worst-case stress loss (fraction of book) at/above which the stress card is ALERT / WATCH. */
+    private static final double STRESS_ALERT = 0.15;
+    private static final double STRESS_WATCH = 0.08;
 
     /**
      * Build the full card set for a user, ordered highest-severity first. Every generator is
@@ -69,6 +75,8 @@ public class InsightCardService {
 
         List<VarBacktestReport> reports = safeList(() -> varBacktestService.backtest(userId));
         varBacktestCard(reports, rd.orElse(null)).ifPresent(cards::add);
+
+        stressCard(safeList(() -> stressScenarioService.stress(userId))).ifPresent(cards::add);
 
         cards.sort(Comparator.comparingInt((InsightCard c) -> c.severity().ordinal()).reversed());
         return calibrate(cards);
@@ -330,6 +338,52 @@ public class InsightCardService {
                         "Rolling out-of-sample; breach = realized return < −VaR_t",
                         "Kupiec tests average coverage (χ²₁); Christoffersen tests breach independence (χ²₁)"))
                 .rawConfidence(anyReject ? 0.4 : (anyCluster ? 0.55 : 0.75))
+                .build());
+    }
+
+    // ── STRESS ──────────────────────────────────────────────────────────────────
+
+    /**
+     * Named historical shock replays applied to the current book (Phase E). One computation row
+     * per scenario stating the factor-model P&L and the beta-only cross-check; severity is driven
+     * by the worst-case loss as a share of the book. The card is informational (no per-symbol
+     * action) — it sizes tail risk, it does not recommend a trade.
+     */
+    Optional<InsightCard> stressCard(List<StressResult> results) {
+        if (results == null || results.isEmpty()) return Optional.empty();
+
+        StressResult worst = results.getFirst();   // service returns worst factor-model loss first
+
+        List<Computation> comps = new ArrayList<>();
+        for (StressResult r : results) {
+            comps.add(new Computation(
+                    r.label(),
+                    String.format("Nifty %+.1f%% → est P&L ₹%,.0f (β-only cross-check ₹%,.0f)",
+                            r.niftyShockPct(), r.factorModelPnl(), r.betaOnlyPnl()),
+                    "Σ βf·shockf·V (factor model) vs β_mkt·shock·V (cross-check)",
+                    String.format("β_mkt=%.2f, V=₹%,.0f", r.betaMkt(), r.portfolioValue()),
+                    r.scenario()));
+        }
+
+        double worstLossPct = worst.lossPctOfValue();          // negative = loss
+        double worstLossMag = Math.abs(worstLossPct);
+        InsightCard.Severity sev = worstLossMag >= STRESS_ALERT ? InsightCard.Severity.ALERT
+                : worstLossMag >= STRESS_WATCH ? InsightCard.Severity.WATCH
+                : InsightCard.Severity.INFO;
+
+        String title = String.format("Stress: worst case %s → ₹%,.0f (%.1f%% of book)",
+                worst.label(), worst.factorModelPnl(), worstLossPct * 100);
+
+        List<String> caveats = new ArrayList<>(List.of(
+                "Historical factor-return replay applied to current betas estimated on the factor-model window",
+                "Factor-model and beta-only estimates diverge by the sector/size tilt — the gap is informative"));
+        if (worst.notes() != null) caveats.addAll(worst.notes());
+
+        return Optional.of(InsightCard.builder("stress", InsightCard.Category.STRESS, sev)
+                .title(title)
+                .computations(comps)
+                .caveats(caveats)
+                .rawConfidence(0.55)
                 .build());
     }
 
