@@ -220,6 +220,20 @@ public class CFOController {
         return ResponseEntity.ok(insightCardService.generate(defaultUserId));
     }
 
+    /**
+     * GET /api/cfo/insight-cards/marginal-add?symbol=INFY
+     * On-demand marginal-add analysis for a candidate symbol: how a small hypothetical position
+     * would move portfolio volatility and how correlated it is to the current book. Not part of
+     * the daily card set (a brief has no candidate). 404 when the fit cannot be computed.
+     */
+    @GetMapping("/insight-cards/marginal-add")
+    public ResponseEntity<org.amit.finwise.cfo.model.InsightCard> getMarginalAddCard(
+            @RequestParam String symbol) {
+        return insightCardService.marginalAddCard(defaultUserId, symbol)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }
+
     // ── News ──────────────────────────────────────────────────────────────────
 
     /**
