@@ -6,6 +6,8 @@ import org.amit.finwise.document.model.ParsedDocument;
 import org.amit.finwise.document.service.DocumentParserService;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -18,22 +20,15 @@ public class DocumentController {
 
     private final DocumentParserService documentParserService;
 
-    /**
-     * POST /api/documents/upload
-     * Upload a PDF statement (bank, MF, demat, credit card).
-     * The document module only stores the file metadata and parse result.
-     */
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<DocumentUpload> upload(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam("file") MultipartFile file,
             @RequestParam(value = "password", required = false) String password) {
-        return ResponseEntity.ok(documentParserService.uploadAndParse(file, password));
+        return ResponseEntity.ok(
+                documentParserService.uploadAndParse(principal.getUsername(), file, password));
     }
 
-    /**
-     * POST /api/documents/parse
-     * Extract text and parse neutral document records without saving expenses or budgets.
-     */
     @PostMapping(value = "/parse", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ParsedDocument> parse(
             @RequestParam("file") MultipartFile file,
@@ -46,18 +41,12 @@ public class DocumentController {
         }
     }
 
-    /**
-     * GET /api/documents
-     * List all uploaded documents for the configured user.
-     */
     @GetMapping
-    public ResponseEntity<List<DocumentUpload>> list() {
-        return ResponseEntity.ok(documentParserService.getDocuments());
+    public ResponseEntity<List<DocumentUpload>> list(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(documentParserService.getDocuments(principal.getUsername()));
     }
 
-    /**
-     * GET /api/documents/{id}
-     */
     @GetMapping("/{id}")
     public ResponseEntity<DocumentUpload> get(@PathVariable Long id) {
         return documentParserService.getDocument(id)
@@ -65,14 +54,10 @@ public class DocumentController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * GET /api/documents/{id}/parse-result
-     */
     @GetMapping("/{id}/parse-result")
     public ResponseEntity<ParsedDocument> getParseResult(@PathVariable Long id) {
         return documentParserService.getParsedDocument(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
-
 }

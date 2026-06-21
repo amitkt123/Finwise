@@ -8,7 +8,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.NewsArticle;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
 import org.amit.finwise.cfo.service.rag.ArticleEntityService;
-import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
@@ -58,9 +57,6 @@ public class LlmRefinementService {
     private final ObjectMapper objectMapper;
     private final org.amit.finwise.cfo.service.EmbeddingService embeddingService;
     private final ArticleEntityService articleEntityService;
-
-    @Value("${cfo.user.id}")
-    private String userId;
 
     @Value("${cfo.llm.confidence-threshold:0.55}")
     private double confidenceThreshold;
@@ -206,12 +202,9 @@ public class LlmRefinementService {
      * Returns an empty set (gracefully) on any failure.
      */
     private Set<String> getPortfolioSymbols() {
+        // Global: collect all active symbols so LLM refinement is not tied to a single user.
         try {
-            return investmentRepository.findActiveInvestments(userId).stream()
-                    .map(Investment::getSymbol)
-                    .filter(s -> s != null && !s.isBlank())
-                    .map(String::toUpperCase)
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            return new LinkedHashSet<>(investmentRepository.findAllActiveSymbols());
         } catch (Exception e) {
             log.debug("Could not load portfolio symbols for LLM context: {}", e.getMessage());
             return Set.of();

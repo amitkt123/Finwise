@@ -7,6 +7,8 @@ import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.goal.service.GoalAnalyzerService;
 import org.amit.finwise.goal.service.MonteCarloGoalService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -24,7 +26,7 @@ public class GoalController {
 
     @PostMapping("/goal")
     public ResponseEntity<FinancialGoal> createGoal(
-            @RequestParam String userId,
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam String name,
             @RequestParam String description,
             @RequestParam FinancialGoal.GoalType type,
@@ -32,7 +34,8 @@ public class GoalController {
             @RequestParam LocalDate targetDate,
             @RequestParam(required = false) FinancialGoal.GoalPriority priority) {
         FinancialGoal.GoalPriority p = priority != null ? priority : FinancialGoal.GoalPriority.MEDIUM;
-        return ResponseEntity.ok(goalAnalyzerService.createGoal(userId, name, description, type, targetAmount, targetDate, p));
+        return ResponseEntity.ok(goalAnalyzerService.createGoal(
+                principal.getUsername(), name, description, type, targetAmount, targetDate, p));
     }
 
     @PutMapping("/goal/{id}/progress")
@@ -56,12 +59,14 @@ public class GoalController {
     }
 
     @GetMapping("/goal/alerts")
-    public ResponseEntity<List<GoalAnalyzerService.GoalAlert>> getGoalAlerts(@RequestParam String userId) {
-        return ResponseEntity.ok(goalAnalyzerService.getGoalAlerts(userId));
+    public ResponseEntity<List<GoalAnalyzerService.GoalAlert>> getGoalAlerts(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(goalAnalyzerService.getGoalAlerts(principal.getUsername()));
     }
 
     @GetMapping("/goal/active")
-    public ResponseEntity<List<FinancialGoal>> getActiveGoals(@RequestParam String userId) {
-        return ResponseEntity.ok(goalRepository.findActiveGoals(userId));
+    public ResponseEntity<List<FinancialGoal>> getActiveGoals(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(goalRepository.findActiveGoals(principal.getUsername()));
     }
 }

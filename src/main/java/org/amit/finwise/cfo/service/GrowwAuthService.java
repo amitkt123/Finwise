@@ -27,9 +27,6 @@ public class GrowwAuthService {
     @Value("${cfo.groww.token-encryption-key}")
     private String encryptionKey;
 
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
     /**
      * Store a Groww Bearer token manually (from browser/app session).
      */

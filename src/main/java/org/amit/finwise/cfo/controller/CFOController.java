@@ -2,6 +2,8 @@ package org.amit.finwise.cfo.controller;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.cfo.dto.InsightResponse;
+import org.amit.finwise.cfo.dto.TransactionResponse;
 import org.amit.finwise.cfo.model.*;
 import org.amit.finwise.cfo.repository.RiskQuestionnaireRepository;
 import org.amit.finwise.cfo.service.CFOAdvisorService;
@@ -17,10 +19,11 @@ import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -52,76 +55,57 @@ public class CFOController {
     private final AttributionService attributionService;
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
 
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
     // ── Daily Brief ────────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/brief
-     * Returns today's CFO morning brief (generates on demand if not yet created).
-     */
     @GetMapping("/brief")
-    public ResponseEntity<AiInsight> getDailyBrief() {
-        AiInsight brief = cfoAdvisorService.generateDailyBrief();
-        return ResponseEntity.ok(brief);
+    public ResponseEntity<InsightResponse> getDailyBrief(@AuthenticationPrincipal UserDetails principal) {
+        AiInsight brief = cfoAdvisorService.generateDailyBrief(principal.getUsername());
+        return ResponseEntity.ok(InsightResponse.from(brief));
     }
 
     // ── Insights ──────────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/insights?page=0&size=20
-     * Paginated list of all CFO insights.
-     */
     @GetMapping("/insights")
-    public ResponseEntity<Page<AiInsight>> getInsights(
+    public ResponseEntity<Page<InsightResponse>> getInsights(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ResponseEntity.ok(cfoAdvisorService.getInsights(page, size));
+        return ResponseEntity.ok(cfoAdvisorService.getInsights(principal.getUsername(), page, size)
+                .map(InsightResponse::from));
     }
 
-    /**
-     * GET /api/cfo/insights/{type}
-     * Latest insight of a specific type (DAILY_BRIEF, GOAL_ADVICE, MARKET_INSIGHT, etc.)
-     */
     @GetMapping("/insights/{type}")
-    public ResponseEntity<AiInsight> getInsightByType(@PathVariable AiInsight.InsightType type) {
-        return cfoAdvisorService.getLatestInsightByType(type)
+    public ResponseEntity<InsightResponse> getInsightByType(
+            @AuthenticationPrincipal UserDetails principal,
+            @PathVariable AiInsight.InsightType type) {
+        return cfoAdvisorService.getLatestInsightByType(principal.getUsername(), type)
+                .map(InsightResponse::from)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     // ── Portfolio ─────────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/portfolio
-     * Latest portfolio snapshot with P&L.
-     */
     @GetMapping("/portfolio")
-    public ResponseEntity<PortfolioSnapshot> getLatestPortfolio() {
-        return cfoAdvisorService.getLatestPortfolioSnapshot()
+    public ResponseEntity<PortfolioSnapshot> getLatestPortfolio(
+            @AuthenticationPrincipal UserDetails principal) {
+        return cfoAdvisorService.getLatestPortfolioSnapshot(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * POST /api/cfo/sync/groww
-     * Fetch holdings from Groww API, upsert into investments table, and save portfolio snapshot.
-     */
     @PostMapping("/sync/groww")
-    public ResponseEntity<PortfolioSnapshot> syncGroww() {
-        PortfolioSnapshot snapshot = growwConnector.syncHoldings();
+    public ResponseEntity<PortfolioSnapshot> syncGroww(
+            @AuthenticationPrincipal UserDetails principal) {
+        PortfolioSnapshot snapshot = growwConnector.syncHoldings(principal.getUsername());
         return ResponseEntity.ok(snapshot);
     }
 
-    /**
-     * GET /api/cfo/holdings
-     * Returns all active holdings synced from Groww (and any other platform).
-     * Each entry includes symbol, sector, invested cost, current value, P&L, and exposure %.
-     */
     @GetMapping("/holdings")
-    public ResponseEntity<List<HoldingSummary>> getHoldings() {
-        List<Investment> investments = investmentRepository.findActiveInvestments(defaultUserId);
+    public ResponseEntity<List<HoldingSummary>> getHoldings(
+            @AuthenticationPrincipal UserDetails principal) {
+        String userId = principal.getUsername();
+        List<Investment> investments = investmentRepository.findActiveInvestments(userId);
         if (investments.isEmpty()) return ResponseEntity.ok(List.of());
 
         double totalCost = investments.stream()
@@ -169,13 +153,8 @@ public class CFOController {
     ) {}
 
 
-    // ── Mutual-Fund Look-Through & Attribution (Phase 12) ────────────────────────
+    // ── Mutual-Fund Look-Through & Attribution ────────────────────────────────
 
-    /**
-     * POST /api/cfo/mf-portfolio/import
-     * Import a mutual-fund portfolio disclosure CSV (manual, per the AMFI no-API contract).
-     * Columns: schemeCode,asOf,isin,symbol,weightPct,sector (header optional).
-     */
     @PostMapping(value = "/mf-portfolio/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<MfPortfolioImportService.ImportSummary> importMfPortfolio(
             @RequestParam("file") MultipartFile file) {
@@ -187,59 +166,39 @@ public class CFOController {
         }
     }
 
-    /**
-     * GET /api/cfo/look-through
-     * Effective per-stock/per-sector exposure after exploding mutual funds into constituents.
-     */
     @GetMapping("/look-through")
-    public ResponseEntity<LookThroughResult> getLookThrough() {
-        return lookThroughService.compute(defaultUserId)
+    public ResponseEntity<LookThroughResult> getLookThrough(
+            @AuthenticationPrincipal UserDetails principal) {
+        return lookThroughService.compute(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * GET /api/cfo/attribution
-     * Brinson-Fachler attribution of portfolio excess return over Nifty (monthly, linked).
-     */
     @GetMapping("/attribution")
-    public ResponseEntity<AttributionReport> getAttribution() {
-        return attributionService.compute(defaultUserId)
+    public ResponseEntity<AttributionReport> getAttribution(
+            @AuthenticationPrincipal UserDetails principal) {
+        return attributionService.compute(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * GET /api/cfo/insight-cards
-     * Typed, Java-rendered insight cards (Honest-Insights Phase B): each carries its figures
-     * with value · method · inputs · window · caveats, ordered highest-severity first. Numbers
-     * are computed in Java; the LLM only narrates. Empty list when the portfolio lacks data.
-     */
     @GetMapping("/insight-cards")
-    public ResponseEntity<java.util.List<org.amit.finwise.cfo.model.InsightCard>> getInsightCards() {
-        return ResponseEntity.ok(insightCardService.generate(defaultUserId));
+    public ResponseEntity<java.util.List<org.amit.finwise.cfo.model.InsightCard>> getInsightCards(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(insightCardService.generate(principal.getUsername()));
     }
 
-    /**
-     * GET /api/cfo/insight-cards/marginal-add?symbol=INFY
-     * On-demand marginal-add analysis for a candidate symbol: how a small hypothetical position
-     * would move portfolio volatility and how correlated it is to the current book. Not part of
-     * the daily card set (a brief has no candidate). 404 when the fit cannot be computed.
-     */
     @GetMapping("/insight-cards/marginal-add")
     public ResponseEntity<org.amit.finwise.cfo.model.InsightCard> getMarginalAddCard(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam String symbol) {
-        return insightCardService.marginalAddCard(defaultUserId, symbol)
+        return insightCardService.marginalAddCard(principal.getUsername(), symbol)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
     // ── News ──────────────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/news?limit=20
-     * Latest news ranked by portfolio relevance.
-     */
     @GetMapping("/news")
     public ResponseEntity<List<NewsArticle>> getNews(
             @RequestParam(defaultValue = "20") int limit,
@@ -247,36 +206,22 @@ public class CFOController {
         return ResponseEntity.ok(newsAggregatorService.getNews(daysBack, limit));
     }
 
-    /**
-     * GET /api/cfo/news/personalized?limit=20&daysBack=1
-     * News ranked by investor-specific personalized score.
-     * Includes full scoring breakdown (portfolioBoost, correlationBoost, goalAlignment, etc.)
-     */
     @GetMapping("/news/personalized")
     public ResponseEntity<PersonalizedNewsResponse> getPersonalizedNews(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "20") int limit,
             @RequestParam(defaultValue = "1") int daysBack) {
         return ResponseEntity.ok(
-                personalizedRelevanceScorer.score(defaultUserId, daysBack, limit));
+                personalizedRelevanceScorer.score(principal.getUsername(), daysBack, limit));
     }
 
-    /**
-     * POST /api/cfo/news/fetch
-     * Trigger a manual news fetch.
-     */
     @PostMapping("/news/fetch")
     public ResponseEntity<Map<String, Integer>> fetchNews() {
         int count = newsAggregatorService.fetchAndStoreNews();
-        // Always trigger LLM refinement after a fetch (async — won't block the response)
         llmRefinementService.refineRecentArticles();
         return ResponseEntity.ok(Map.of("fetched", count));
     }
 
-    /**
-     * POST /api/cfo/news/review
-     * Manually trigger LLM review of recent unreviewed articles.
-     * Useful when Ollama was down during the last fetch cycle.
-     */
     @PostMapping("/news/review")
     public ResponseEntity<Map<String, String>> triggerLlmReview() {
         llmRefinementService.refineRecentArticles();
@@ -285,36 +230,29 @@ public class CFOController {
 
     // ── Transactions ──────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/transactions?page=0&size=50
-     * Unified transaction ledger (all sources).
-     */
     @GetMapping("/transactions")
-    public ResponseEntity<Page<Transaction>> getTransactions(
+    public ResponseEntity<Page<TransactionResponse>> getTransactions(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size) {
-        return ResponseEntity.ok(cfoAdvisorService.getTransactions(page, size));
+        return ResponseEntity.ok(cfoAdvisorService.getTransactions(principal.getUsername(), page, size)
+                .map(TransactionResponse::from));
     }
 
-    /**
-     * GET /api/cfo/transactions/recent?days=30
-     * Recent transactions for quick review.
-     */
     @GetMapping("/transactions/recent")
-    public ResponseEntity<List<Transaction>> getRecentTransactions(
+    public ResponseEntity<List<TransactionResponse>> getRecentTransactions(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "30") int days) {
-        return ResponseEntity.ok(cfoAdvisorService.getRecentTransactions(days));
+        return ResponseEntity.ok(cfoAdvisorService.getRecentTransactions(principal.getUsername(), days)
+                .stream().map(TransactionResponse::from).toList());
     }
 
     // ── Goal Advice ───────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/goals/advice
-     * AI advice on current goals.
-     */
     @GetMapping("/goals/advice")
-    public ResponseEntity<AiInsight> getGoalAdvice() {
-        AiInsight advice = cfoAdvisorService.generateGoalAdvice();
+    public ResponseEntity<AiInsight> getGoalAdvice(
+            @AuthenticationPrincipal UserDetails principal) {
+        AiInsight advice = cfoAdvisorService.generateGoalAdvice(principal.getUsername());
         if (advice == null) {
             return ResponseEntity.notFound().build();
         }
@@ -323,14 +261,11 @@ public class CFOController {
 
     // ── Chat ──────────────────────────────────────────────────────────────────
 
-    /**
-     * POST /api/cfo/chat
-     * Ask your CFO anything (stateless — each request gets full context injected).
-     * Body: { "message": "Should I buy more HDFC Bank?" }
-     */
     @PostMapping("/chat")
-    public ResponseEntity<ChatResponse> chat(@RequestBody ChatRequest request) {
-        String response = cfoAdvisorService.chat(List.of(), request.message());
+    public ResponseEntity<ChatResponse> chat(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestBody ChatRequest request) {
+        String response = cfoAdvisorService.chat(List.of(), principal.getUsername(), request.message());
         return ResponseEntity.ok(new ChatResponse(response));
     }
 
@@ -339,10 +274,6 @@ public class CFOController {
 
     // ── Price Data ────────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/prices/providers
-     * Returns the active price provider fallback chain.
-     */
     @GetMapping("/prices/providers")
     public ResponseEntity<Map<String, Object>> getPriceProviders() {
         return ResponseEntity.ok(Map.of(
@@ -351,21 +282,13 @@ public class CFOController {
         ));
     }
 
-    /**
-     * POST /api/cfo/prices/fetch
-     * Manually trigger a price history fetch for all portfolio symbols.
-     */
     @PostMapping("/prices/fetch")
-    public ResponseEntity<Map<String, String>> fetchPrices() {
-        stockPriceService.fetchAndPersistPrices(defaultUserId);
+    public ResponseEntity<Map<String, String>> fetchPrices(
+            @AuthenticationPrincipal UserDetails principal) {
+        stockPriceService.fetchAndPersistPrices(principal.getUsername());
         return ResponseEntity.ok(Map.of("status", "Price fetch completed"));
     }
 
-    /**
-     * POST /api/cfo/prices/fetch-symbol?symbol={symbol}
-     * Fetch price history for a specific symbol (useful for testing individual providers).
-     * Query param allows special characters like ^ in index symbols (e.g., ^NSEI, ^BSESN).
-     */
     @PostMapping("/prices/fetch-symbol")
     public ResponseEntity<Map<String, Object>> fetchPriceForSymbol(@RequestParam String symbol) {
         try {
@@ -384,89 +307,67 @@ public class CFOController {
         }
     }
 
-    /**
-     * POST /api/cfo/prices/sync
-     * Syncs the latest fetched prices back to Investment records and rebuilds the portfolio snapshot.
-     * Use this if prices were already fetched but the Investment table wasn't updated (e.g. after a restart).
-     */
     @PostMapping("/prices/sync")
-    public ResponseEntity<Map<String, String>> syncPricesToPortfolio() {
-        stockPriceService.updateInvestmentCurrentPrices(defaultUserId);
-        stockPriceService.rebuildPortfolioSnapshot(defaultUserId);
+    public ResponseEntity<Map<String, String>> syncPricesToPortfolio(
+            @AuthenticationPrincipal UserDetails principal) {
+        String userId = principal.getUsername();
+        stockPriceService.updateInvestmentCurrentPrices(userId);
+        stockPriceService.rebuildPortfolioSnapshot(userId);
         return ResponseEntity.ok(Map.of("status", "Investment prices and portfolio snapshot updated"));
     }
 
     // ── Investor Profile: Behavior + Questionnaire ───────────────────────────
 
-    /**
-     * GET /api/cfo/investor/behavior
-     * Returns the derived behavioral profile (trading style, panic ratio, win rate, etc.)
-     */
     @GetMapping("/investor/behavior")
-    public ResponseEntity<InvestorBehaviorProfile> getBehaviorProfile() {
-        return investorBehaviorService.getProfile(defaultUserId)
+    public ResponseEntity<InvestorBehaviorProfile> getBehaviorProfile(
+            @AuthenticationPrincipal UserDetails principal) {
+        return investorBehaviorService.getProfile(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * POST /api/cfo/investor/behavior/refresh
-     * Force-recomputes the behavioral profile from full transaction history.
-     */
     @PostMapping("/investor/behavior/refresh")
-    public ResponseEntity<InvestorBehaviorProfile> refreshBehaviorProfile() {
-        return ResponseEntity.ok(investorBehaviorService.recompute(defaultUserId));
+    public ResponseEntity<InvestorBehaviorProfile> refreshBehaviorProfile(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(investorBehaviorService.recompute(principal.getUsername()));
     }
 
-    /**
-     * GET /api/cfo/investor/questionnaire
-     * Returns the stored risk questionnaire answers.
-     */
     @GetMapping("/investor/questionnaire")
-    public ResponseEntity<RiskQuestionnaire> getQuestionnaire() {
-        return riskQuestionnaireRepository.findByUserId(defaultUserId)
+    public ResponseEntity<RiskQuestionnaire> getQuestionnaire(
+            @AuthenticationPrincipal UserDetails principal) {
+        return riskQuestionnaireRepository.findByUserId(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * PUT /api/cfo/investor/questionnaire
-     * Submit or update risk questionnaire answers.
-     * Automatically computes statedRiskScore and updates hypocrisyScore.
-     */
     @PutMapping("/investor/questionnaire")
     public ResponseEntity<RiskQuestionnaire> updateQuestionnaire(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestBody RiskQuestionnaire request) {
-        request.setUserId(defaultUserId);
+        String userId = principal.getUsername();
+        request.setUserId(userId);
         request.setStatedRiskScore(investorBehaviorService.scoreQuestionnaire(request));
         request.setCompletedAt(java.time.LocalDateTime.now());
         RiskQuestionnaire saved = riskQuestionnaireRepository.save(request);
-        // Refresh behavior profile so hypocrisyScore is recomputed
-        investorBehaviorService.recomputeAsync(defaultUserId);
+        investorBehaviorService.recomputeAsync(userId);
         return ResponseEntity.ok(saved);
     }
 
     // ── Auth / Groww Token ────────────────────────────────────────────────────
 
-    /**
-     * PUT /api/cfo/auth/groww/token
-     * Update Groww Bearer token manually (paste from browser DevTools).
-     * Body: { "token": "eyJhbG..." }
-     */
     @PutMapping("/auth/groww/token")
-    public ResponseEntity<Map<String, String>> updateGrowwToken(@RequestBody TokenRequest request) {
-        growwAuthService.saveToken(defaultUserId, request.token());
+    public ResponseEntity<Map<String, String>> updateGrowwToken(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestBody TokenRequest request) {
+        growwAuthService.saveToken(principal.getUsername(), request.token());
         return ResponseEntity.ok(Map.of("status", "Token saved successfully"));
     }
 
-    /**
-     * POST /api/cfo/auth/groww/credentials
-     * Store Groww credentials for auto-refresh (JSON: {username, password}).
-     * Body: { "credentialsJson": "{\"email\":\"...\",\"password\":\"...\"}" }
-     */
     @PostMapping("/auth/groww/credentials")
-    public ResponseEntity<Map<String, String>> saveGrowwCredentials(@RequestBody CredentialsRequest request) {
-        growwAuthService.saveCredentials(defaultUserId, request.credentialsJson());
+    public ResponseEntity<Map<String, String>> saveGrowwCredentials(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestBody CredentialsRequest request) {
+        growwAuthService.saveCredentials(principal.getUsername(), request.credentialsJson());
         return ResponseEntity.ok(Map.of("status", "Credentials saved for auto-refresh"));
     }
 
@@ -475,23 +376,20 @@ public class CFOController {
 
     // ── User Profile ──────────────────────────────────────────────────────────
 
-    /**
-     * GET /api/cfo/profile
-     */
     @GetMapping("/profile")
-    public ResponseEntity<UserProfile> getProfile() {
-        return cfoAdvisorService.getProfile()
+    public ResponseEntity<UserProfile> getProfile(
+            @AuthenticationPrincipal UserDetails principal) {
+        return cfoAdvisorService.getProfile(principal.getUsername())
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /**
-     * PUT /api/cfo/profile
-     * Update user profile (income, risk appetite, goals context, etc.)
-     */
     @PutMapping("/profile")
-    public ResponseEntity<UserProfile> updateProfile(@RequestBody UserProfileRequest request) {
+    public ResponseEntity<UserProfile> updateProfile(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestBody UserProfileRequest request) {
         UserProfile profile = cfoAdvisorService.updateProfile(
+                principal.getUsername(),
                 request.name(), request.email(), request.monthlyIncome(),
                 request.monthlyFixedExpenses(), request.riskAppetite(),
                 request.investmentHorizonYears(), request.targetMonthlySavings(),

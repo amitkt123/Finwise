@@ -137,7 +137,8 @@ public class GapRepairService {
                     "Market-data ingestion failing",
                     "Critical ingestion jobs are still failing after retries:\n\n- "
                             + String.join("\n- ", criticalFailures)
-                            + "\n\nThe gap-repair job will retry on its next run.");
+                            + "\n\nThe gap-repair job will retry on its next run.",
+                    null);
         }
         log.info("[GapRepair] window={}d gaps={} repaired={} stillFailing={}",
                 windowDays, gaps, repaired, stillFailing);

@@ -8,7 +8,6 @@ import org.amit.finwise.document.model.ParsedTransaction;
 import org.amit.finwise.document.service.DocumentParserService;
 import org.amit.finwise.expense.model.Expense;
 import org.amit.finwise.expense.repository.ExpenseRepository;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,11 +24,8 @@ public class ExpenseDocumentIngestionService {
     private final ExpenseService expenseService;
     private final BudgetMonitorService budgetMonitorService;
 
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
     @Transactional
-    public ImportResult importDocument(Long documentId) {
+    public ImportResult importDocument(String userId, Long documentId) {
         ParsedDocument parsedDocument = documentParserService.getParsedDocument(documentId)
                 .orElseThrow(() -> new IllegalArgumentException("Document not found: " + documentId));
 
@@ -39,9 +35,9 @@ public class ExpenseDocumentIngestionService {
                 continue;
             }
 
-            Expense expense = toExpense(defaultUserId, documentId, transaction);
+            Expense expense = toExpense(userId, documentId, transaction);
             expense = expenseRepository.save(expense);
-            budgetMonitorService.updateBudgetForExpense(defaultUserId, expense);
+            budgetMonitorService.updateBudgetForExpense(userId, expense);
             saved.add(expense);
         }
 

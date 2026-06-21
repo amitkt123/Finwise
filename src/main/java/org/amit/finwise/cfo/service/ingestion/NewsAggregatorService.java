@@ -8,10 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.config.NewsProperties;
 import org.amit.finwise.cfo.model.NewsArticle;
 import org.amit.finwise.cfo.repository.NewsArticleRepository;
-import org.amit.finwise.cfo.repository.TransactionRepository;
 import org.amit.finwise.cfo.service.rag.NewsClusteringService;
 import org.jsoup.Jsoup;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
@@ -38,7 +36,7 @@ import java.util.stream.Collectors;
 public class NewsAggregatorService {
 
     private final NewsArticleRepository newsArticleRepository;
-    private final TransactionRepository transactionRepository;
+    private final org.amit.finwise.investment.repository.InvestmentRepository investmentRepository;
     private final NewsClassificationPipeline classificationPipeline;
     private final SymbolExtractorService symbolExtractorService;
     private final NewsProperties newsProperties;
@@ -46,9 +44,6 @@ public class NewsAggregatorService {
 
     /** RSS feeds publish in IST; pin parsing so a server in another zone doesn't shift dates. */
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
-
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
 
     /**
      * Fetch all news sources and store with relevance ranking.
@@ -297,11 +292,13 @@ public class NewsAggregatorService {
     }
 
     private Set<String> getUserHoldingSymbols() {
-        // Get recently traded symbols from unified transaction ledger
-        return transactionRepository.findRecentTransactions(defaultUserId, LocalDate.now().minusDays(365))
-                .stream()
-                .filter(t -> t.getSymbol() != null)
-                .map(t -> t.getSymbol().toUpperCase())
-                .collect(Collectors.toSet());
+        // Global: collect all active symbols across all users so news relevance
+        // scoring is not tied to a single user. Per-user personalization happens
+        // at read time via PersonalizedRelevanceScorer.
+        try {
+            return new java.util.HashSet<>(investmentRepository.findAllActiveSymbols());
+        } catch (Exception e) {
+            return Set.of();
+        }
     }
 }

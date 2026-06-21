@@ -2,6 +2,9 @@ package org.amit.finwise.cfo.service;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.amit.finwise.config.CacheConfig;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.amit.finwise.cfo.model.AiInsight;
 import org.amit.finwise.cfo.model.NewsArticle;
 import org.amit.finwise.cfo.model.PersonalizedNewsItem;
@@ -36,8 +39,10 @@ import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.amit.finwise.policy.service.PolicyIntelligenceService;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import io.micrometer.core.instrument.Counter;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -90,12 +95,7 @@ public class CFOAdvisorService {
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
     private final org.amit.finwise.cfo.service.insight.InsightNarrationService insightNarrationService;
     private final org.amit.finwise.cfo.service.insight.InsightCardRenderer insightCardRenderer;
-
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
-    @Value("${cfo.user.name:User}")
-    private String userName;
+    private final MeterRegistry meterRegistry;
 
     // ── System Prompt ─────────────────────────────────────────────────────────
 
@@ -153,8 +153,19 @@ public class CFOAdvisorService {
      * This ensures a fresh brief is produced after each Groww sync + price fetch cycle,
      * rather than serving a stale 7:30 AM brief all day.
      */
-    public AiInsight generateDailyBrief() {
-        String userId = defaultUserId;
+    public AiInsight generateDailyBrief(String userId) {
+        Timer.Sample sample = Timer.start(meterRegistry);
+        try {
+        return doGenerateDailyBrief(userId);
+        } finally {
+            sample.stop(Timer.builder("cfo.brief.generation")
+                    .description("Time to generate a daily CFO brief")
+                    .tag("type", "daily")
+                    .register(meterRegistry));
+        }
+    }
+
+    private AiInsight doGenerateDailyBrief(String userId) {
         LocalDate today = LocalDate.now();
 
         Optional<AiInsight> existing = insightRepository.findFirstByUserIdAndInsightDateAndInsightTypeOrderByCreatedAtDesc(
@@ -217,8 +228,7 @@ public class CFOAdvisorService {
 
     // ── After-Hours Insights ──────────────────────────────────────────────────
 
-    public AiInsight generateAfterHoursInsights() {
-        String userId = defaultUserId;
+    public AiInsight generateAfterHoursInsights(String userId) {
         LocalDate today = LocalDate.now();
 
         String context = buildAfterHoursContext(userId);
@@ -271,8 +281,7 @@ public class CFOAdvisorService {
      *
      * @param label short label embedded in the title, e.g. "Mid-Day" or "Post-Close"
      */
-    public AiInsight generateMarketInsight(String label) {
-        String userId = defaultUserId;
+    public AiInsight generateMarketInsight(String label, String userId) {
         LocalDate today = LocalDate.now();
 
         String context = buildAfterHoursContext(userId);
@@ -367,8 +376,7 @@ public class CFOAdvisorService {
 
     // ── Goal Advice ────────────────────────────────────────────────────────────
 
-    public AiInsight generateGoalAdvice() {
-        String userId = defaultUserId;
+    public AiInsight generateGoalAdvice(String userId) {
 
         List<FinancialGoal> goals = goalRepository.findActiveGoals(userId);
         if (goals.isEmpty()) {
@@ -429,7 +437,11 @@ public class CFOAdvisorService {
 
     // ── Conversational Chat ────────────────────────────────────────────────────
 
-    public String chat(List<LLMMessage> conversationHistory, String userMessage) {
+    public String chat(List<LLMMessage> conversationHistory, String userId, String userMessage) {
+        Counter.builder("cfo.chat.requests")
+                .description("Number of CFO chat requests")
+                .register(meterRegistry)
+                .increment();
         IntentClassifier.ClassifiedIntent intent = intentClassifier.classify(userMessage);
         log.info("[CFO.chat] intent={} symbol={} confidence={}",
                 intent.type(), intent.symbol(), intent.confidence());
@@ -439,12 +451,12 @@ public class CFOAdvisorService {
 
         if (intent.type() == IntentClassifier.Intent.RESEARCH && intent.symbol() != null) {
             // RESEARCH path: deep-dive first (primacy), portfolio as fit-context after
-            StockDeepDive deepDive = stockIntelligenceService.analyze(intent.symbol(), defaultUserId);
-            contextBlock = buildResearchContext(deepDive, defaultUserId, userMessage);
+            StockDeepDive deepDive = stockIntelligenceService.analyze(intent.symbol(), userId);
+            contextBlock = buildResearchContext(deepDive, userId, userMessage);
             systemPrompt = CFO_SYSTEM_PROMPT + "\n\n" + RESEARCH_SYSTEM_PROMPT;
         } else {
             // PORTFOLIO_REVIEW / PLANNING: existing context layout
-            contextBlock = buildFullContext(defaultUserId, userMessage);
+            contextBlock = buildFullContext(userId, userMessage);
             systemPrompt = CFO_SYSTEM_PROMPT;
         }
 
@@ -464,7 +476,7 @@ public class CFOAdvisorService {
         String response = llmProvider.chatWithHistory(messages);
 
         AiInsight insight = AiInsight.builder()
-                .userId(defaultUserId)
+                .userId(userId)
                 .insightDate(LocalDate.now())
                 .insightType(AiInsight.InsightType.CHAT_RESPONSE)
                 .title("CFO Chat: " + userMessage.substring(0, Math.min(60, userMessage.length())))
@@ -765,7 +777,7 @@ public class CFOAdvisorService {
     private void appendUserProfile(StringBuilder ctx, String userId) {
         userProfileRepository.findByUserId(userId).ifPresent(p -> {
             ctx.append("## User Profile\n");
-            ctx.append("Name: ").append(p.getName() != null ? p.getName() : userName).append("\n");
+            ctx.append("Name: ").append(p.getName() != null ? p.getName() : userId).append("\n");
             if (p.getMonthlyIncome() != null) ctx.append("Monthly Income: ₹").append(p.getMonthlyIncome()).append("\n");
             if (p.getMonthlyFixedExpenses() != null) ctx.append("Fixed Expenses: ₹").append(p.getMonthlyFixedExpenses()).append("\n");
             ctx.append("Stated Risk Appetite: ").append(p.getRiskAppetite()).append("\n");
@@ -1634,47 +1646,52 @@ public class CFOAdvisorService {
 
     // ── Insights Queries ──────────────────────────────────────────────────────
 
-    public Optional<AiInsight> getLatestBrief() {
+    public Optional<AiInsight> getLatestBrief(String userId) {
         return insightRepository.findTopByUserIdAndInsightTypeOrderByCreatedAtDesc(
-                defaultUserId, AiInsight.InsightType.DAILY_BRIEF);
+                userId, AiInsight.InsightType.DAILY_BRIEF);
     }
 
-    public Optional<AiInsight> getLatestInsightByType(AiInsight.InsightType type) {
-        return insightRepository.findTopByUserIdAndInsightTypeOrderByCreatedAtDesc(defaultUserId, type);
+    public Optional<AiInsight> getLatestInsightByType(String userId, AiInsight.InsightType type) {
+        return insightRepository.findTopByUserIdAndInsightTypeOrderByCreatedAtDesc(userId, type);
     }
 
-    public Page<AiInsight> getInsights(int page, int size) {
-        return insightRepository.findByUserIdOrderByCreatedAtDesc(defaultUserId, PageRequest.of(page, size));
+    public Page<AiInsight> getInsights(String userId, int page, int size) {
+        return insightRepository.findByUserIdOrderByCreatedAtDesc(userId, PageRequest.of(page, size));
     }
 
     // ── Portfolio Queries ─────────────────────────────────────────────────────
 
-    public Optional<PortfolioSnapshot> getLatestPortfolioSnapshot() {
-        return snapshotRepository.findTopByUserIdOrderBySnapshotTimeDesc(defaultUserId);
+    @Cacheable(value = CacheConfig.PORTFOLIO_SNAPSHOT, key = "#userId")
+    public Optional<PortfolioSnapshot> getLatestPortfolioSnapshot(String userId) {
+        return snapshotRepository.findTopByUserIdOrderBySnapshotTimeDesc(userId);
     }
+
+    @CacheEvict(value = CacheConfig.PORTFOLIO_SNAPSHOT, key = "#userId")
+    public void evictPortfolioSnapshotCache(String userId) {}
 
     // ── Transaction Queries ───────────────────────────────────────────────────
 
-    public Page<Transaction> getTransactions(int page, int size) {
-        return transactionRepository.findByUserIdOrderByTransactionDateDesc(defaultUserId, PageRequest.of(page, size));
+    public Page<Transaction> getTransactions(String userId, int page, int size) {
+        return transactionRepository.findByUserIdOrderByTransactionDateDesc(userId, PageRequest.of(page, size));
     }
 
-    public List<Transaction> getRecentTransactions(int days) {
-        return transactionRepository.findRecentTransactions(defaultUserId, LocalDate.now().minusDays(days));
+    public List<Transaction> getRecentTransactions(String userId, int days) {
+        return transactionRepository.findRecentTransactions(userId, LocalDate.now().minusDays(days));
     }
 
     // ── User Profile ──────────────────────────────────────────────────────────
 
-    public Optional<UserProfile> getProfile() {
-        return userProfileRepository.findByUserId(defaultUserId);
+    public Optional<UserProfile> getProfile(String userId) {
+        return userProfileRepository.findByUserId(userId);
     }
 
-    public UserProfile updateProfile(String name, String email, java.math.BigDecimal monthlyIncome,
+    public UserProfile updateProfile(String userId, String name, String email,
+                                     java.math.BigDecimal monthlyIncome,
                                      java.math.BigDecimal monthlyFixedExpenses, UserProfile.RiskAppetite riskAppetite,
                                      Integer investmentHorizonYears, java.math.BigDecimal targetMonthlySavings,
                                      String primaryGoalDescription, String additionalContext) {
-        UserProfile profile = userProfileRepository.findByUserId(defaultUserId)
-                .orElse(UserProfile.builder().userId(defaultUserId).build());
+        UserProfile profile = userProfileRepository.findByUserId(userId)
+                .orElse(UserProfile.builder().userId(userId).build());
 
         if (name != null) profile.setName(name);
         if (email != null) profile.setEmail(email);

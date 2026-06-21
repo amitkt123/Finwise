@@ -4,8 +4,9 @@ import lombok.RequiredArgsConstructor;
 import org.amit.finwise.policy.model.*;
 import org.amit.finwise.policy.service.PolicyDocumentCrawlerService;
 import org.amit.finwise.policy.service.PolicyIntelligenceService;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -17,9 +18,6 @@ public class PolicyIntelligenceController {
 
     private final PolicyIntelligenceService policyIntelligenceService;
     private final PolicyDocumentCrawlerService policyDocumentCrawlerService;
-
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
 
     @PostMapping("/documents/ingest/text")
     public ResponseEntity<PolicyIntelligenceService.PolicyDocumentSummary> ingestText(
@@ -49,10 +47,11 @@ public class PolicyIntelligenceController {
 
     @GetMapping("/context")
     public ResponseEntity<PolicyIntelligenceService.AdvisorPolicyContext> getAdvisorContext(
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(required = false) String message,
             @RequestParam(defaultValue = "6") int limit) {
         return ResponseEntity.ok(
-                policyIntelligenceService.buildAdvisorContext(defaultUserId, message, limit));
+                policyIntelligenceService.buildAdvisorContext(principal.getUsername(), message, limit));
     }
 
     @PostMapping("/sync")

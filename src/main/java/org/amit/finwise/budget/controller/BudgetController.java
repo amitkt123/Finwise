@@ -5,6 +5,8 @@ import org.amit.finwise.budget.model.Budget;
 import org.amit.finwise.budget.service.BudgetMonitorService;
 import org.amit.finwise.expense.model.Expense;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -20,35 +22,42 @@ public class BudgetController {
 
     @PostMapping("/budget")
     public ResponseEntity<Budget> setBudget(
-            @RequestParam String userId,
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam String month,
             @RequestParam Expense.ExpenseCategory category,
             @RequestParam BigDecimal limit) {
-        return ResponseEntity.ok(budgetMonitorService.setBudget(userId, month, category, limit));
+        return ResponseEntity.ok(
+                budgetMonitorService.setBudget(principal.getUsername(), month, category, limit));
     }
 
     @GetMapping("/budget/current")
-    public ResponseEntity<BudgetMonitorService.BudgetStatus> getCurrentBudgetStatus(@RequestParam String userId) {
-        return ResponseEntity.ok(budgetMonitorService.getCurrentMonthBudgetStatus(userId));
+    public ResponseEntity<BudgetMonitorService.BudgetStatus> getCurrentBudgetStatus(
+            @AuthenticationPrincipal UserDetails principal) {
+        return ResponseEntity.ok(
+                budgetMonitorService.getCurrentMonthBudgetStatus(principal.getUsername()));
     }
 
     @GetMapping("/budget/alerts")
     public ResponseEntity<List<BudgetMonitorService.BudgetAlert>> getBudgetAlerts(
-            @RequestParam String userId, @RequestParam String month) {
-        return ResponseEntity.ok(budgetMonitorService.getBudgetAlerts(userId, month));
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestParam String month) {
+        return ResponseEntity.ok(
+                budgetMonitorService.getBudgetAlerts(principal.getUsername(), month));
     }
 
     @GetMapping("/insights")
     public ResponseEntity<BudgetMonitorService.SpendingInsights> getSpendingInsights(
-            @RequestParam String userId,
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "6") int months) {
-        return ResponseEntity.ok(budgetMonitorService.getSpendingInsights(userId, months));
+        return ResponseEntity.ok(
+                budgetMonitorService.getSpendingInsights(principal.getUsername(), months));
     }
 
     @GetMapping("/budget/suggest")
     public ResponseEntity<Map<String, BigDecimal>> suggestBudget(
-            @RequestParam String userId,
+            @AuthenticationPrincipal UserDetails principal,
             @RequestParam(defaultValue = "3") int months) {
-        return ResponseEntity.ok(budgetMonitorService.suggestBudget(userId, months));
+        return ResponseEntity.ok(
+                budgetMonitorService.suggestBudget(principal.getUsername(), months));
     }
 }

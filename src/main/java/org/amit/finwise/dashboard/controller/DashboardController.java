@@ -9,6 +9,8 @@ import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.goal.service.GoalAnalyzerService;
 import org.amit.finwise.investment.service.InvestmentService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
@@ -28,7 +30,9 @@ public class DashboardController {
     private final PortfolioRiskService portfolioRiskService;
 
     @GetMapping("/dashboard")
-    public ResponseEntity<FinancialDashboard> getFinancialDashboard(@RequestParam String userId) {
+    public ResponseEntity<FinancialDashboard> getFinancialDashboard(
+            @AuthenticationPrincipal UserDetails principal) {
+        String userId = principal.getUsername();
         InvestmentService.PortfolioAnalysis portfolio = investmentService.getPortfolioAnalysis(userId);
         BudgetMonitorService.BudgetStatus budget = budgetMonitorService.getCurrentMonthBudgetStatus(userId);
         String currentMonth = LocalDate.now().toString().substring(0, 7);
@@ -45,9 +49,6 @@ public class DashboardController {
         dashboard.budgetAlerts = budgetMonitorService.getBudgetAlerts(userId, currentMonth).size();
         dashboard.goalAlerts = goalAnalyzerService.getGoalAlerts(userId).size();
 
-        // Performance: time-weighted (skill, SEBI-grade) and money-weighted (XIRR, what
-        // the investor's own rupees earned). Both shown so the user can read timing vs.
-        // selection. NaN/empty leaves the field null rather than fabricating a number.
         portfolioPerformanceService.computeTwrr(userId).ifPresent(twrr -> {
             if (!Double.isNaN(twrr.annualizedTwrr()))
                 dashboard.annualizedTwrrPercent =
@@ -84,15 +85,10 @@ public class DashboardController {
         public Integer atRiskGoals;
         public Integer budgetAlerts;
         public Integer goalAlerts;
-        /** Annualized time-weighted return % (skill, SEBI-grade); null when too few snapshots. */
         public BigDecimal annualizedTwrrPercent;
-        /** Annualized money-weighted return % (XIRR); null when insufficient cash flows. */
         public BigDecimal xirrPercent;
-        /** Absolute money-weighted return % on deployed capital; null when unavailable. */
         public BigDecimal absoluteReturnPercent;
-        /** Worst peak-to-trough on the portfolio value path %, negative; null when unavailable. */
         public BigDecimal maxDrawdownPercent;
-        /** Annualized return ÷ |max drawdown|; null when drawdown is zero/unavailable. */
         public BigDecimal calmarRatio;
     }
 }

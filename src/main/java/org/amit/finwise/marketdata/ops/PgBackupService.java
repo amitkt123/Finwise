@@ -119,7 +119,7 @@ public class PgBackupService {
             result.put("status", "FAILED");
             result.put("error", e.getMessage());
             emailService.sendPortfolioAlert("Postgres backup failed",
-                    "The nightly pg_dump failed:\n\n" + e.getMessage());
+                    "The nightly pg_dump failed:\n\n" + e.getMessage(), null);
         }
         return result;
     }

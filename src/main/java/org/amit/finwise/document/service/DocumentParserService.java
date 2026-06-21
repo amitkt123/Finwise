@@ -45,12 +45,8 @@ public class DocumentParserService {
     @Value("${document.upload-dir:/tmp/finwise-docs}")
     private String uploadDir;
 
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
     @Transactional
-    public DocumentUpload uploadAndParse(MultipartFile file, String password) {
-        String userId = defaultUserId;
+    public DocumentUpload uploadAndParse(String userId, MultipartFile file, String password) {
 
         Path stored = storeFile(file);
         DocumentUpload upload = DocumentUpload.builder()
@@ -127,8 +123,8 @@ public class DocumentParserService {
                 .map(upload -> parseText(upload.getExtractedText(), upload.getId(), upload.getOriginalFilename()));
     }
 
-    public List<DocumentUpload> getDocuments() {
-        return uploadRepository.findByUserIdOrderByCreatedAtDesc(defaultUserId);
+    public List<DocumentUpload> getDocuments(String userId) {
+        return uploadRepository.findByUserIdOrderByCreatedAtDesc(userId);
     }
 
     public Optional<DocumentUpload> getDocument(Long id) {

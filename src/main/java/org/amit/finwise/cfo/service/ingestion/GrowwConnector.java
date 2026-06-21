@@ -50,9 +50,6 @@ public class GrowwConnector {
     @Value("${cfo.groww.transactions-path}")
     private String transactionsPath;
 
-    @Value("${cfo.user.id}")
-    private String defaultUserId;
-
     /**
      * Fetch current holdings from Groww, upsert into the investments table,
      * and save a portfolio snapshot.
@@ -64,8 +61,7 @@ public class GrowwConnector {
      * </ul>
      */
     @Transactional
-    public PortfolioSnapshot syncHoldings() {
-        String userId = defaultUserId;
+    public PortfolioSnapshot syncHoldings(String userId) {
         String token = growwAuthService.getToken(userId)
                 .orElseThrow(() -> new IllegalStateException(
                         "No Groww token found. Update it via PUT /api/cfo/auth/groww/token"));
@@ -279,8 +275,7 @@ public class GrowwConnector {
      * Fetch transaction history from Groww and store in unified ledger.
      */
     @Transactional
-    public int syncTransactions() {
-        String userId = defaultUserId;
+    public int syncTransactions(String userId) {
         String token = growwAuthService.getToken(userId)
                 .orElseThrow(() -> new IllegalStateException("No Groww token found."));
 

@@ -1,8 +1,11 @@
 package org.amit.finwise.cfo.config;
 
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.retry.RetryRegistry;
 import org.amit.finwise.cfo.service.price.AlphaVantagePriceProvider;
 import org.amit.finwise.cfo.service.price.NSEIndiaPriceProvider;
 import org.amit.finwise.cfo.service.price.PriceDataProvider;
+import org.amit.finwise.cfo.service.price.ResilientPriceDataProvider;
 import org.amit.finwise.cfo.service.price.YahooFinancePriceProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -54,7 +57,9 @@ public class PriceProviderConfig {
      */
     @Bean
     public List<PriceDataProvider> priceDataProviders(YahooFinancePriceProvider yahooFinancePriceProvider,
-                                                      org.amit.finwise.cfo.service.price.NseSessionManager nseSessionManager) {
+                                                      org.amit.finwise.cfo.service.price.NseSessionManager nseSessionManager,
+                                                      CircuitBreakerRegistry circuitBreakerRegistry,
+                                                      RetryRegistry retryRegistry) {
         List<String> order = new ArrayList<>();
         order.add(primaryProvider.trim().toLowerCase());
         for (String fb : fallbackProviders.split(",")) {
@@ -67,12 +72,14 @@ public class PriceProviderConfig {
         List<PriceDataProvider> providers = new ArrayList<>();
         for (String name : order) {
             PriceDataProvider p = buildProvider(name, yahooFinancePriceProvider, nseSessionManager);
-            if (p != null) providers.add(p);
+            if (p != null) {
+                providers.add(new ResilientPriceDataProvider(p, circuitBreakerRegistry, retryRegistry));
+            }
         }
 
         if (providers.isEmpty()) {
-            // Always guarantee at least Yahoo Finance as a safety net
-            providers.add(yahooFinancePriceProvider);
+            providers.add(new ResilientPriceDataProvider(
+                    yahooFinancePriceProvider, circuitBreakerRegistry, retryRegistry));
         }
 
         return providers;

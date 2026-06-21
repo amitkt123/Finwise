@@ -17,25 +17,22 @@ import java.time.format.DateTimeFormatter;
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class   EmailNotificationService {
+public class EmailNotificationService {
 
     private final JavaMailSender mailSender;
     private final AiInsightRepository insightRepository;
 
-    @Value("${cfo.user.email}")
-    private String toEmail;
-
     @Value("${spring.mail.username}")
     private String fromEmail;
 
-    @Value("${cfo.user.name:User}")
-    private String userName;
+    @Value("${cfo.user.email:}")
+    private String fallbackEmail;
 
     /**
      * Send the daily CFO brief as an HTML email.
      */
     @Transactional
-    public void sendDailyBrief(AiInsight insight) {
+    public void sendDailyBrief(AiInsight insight, String recipientEmail) {
         if (insight == null) {
             log.warn("No daily brief to send");
             return;
@@ -44,64 +41,74 @@ public class   EmailNotificationService {
             log.debug("Daily brief already emailed");
             return;
         }
+        String to = resolveRecipient(recipientEmail);
+        if (to == null) return;
 
         String subject = "Your CFO Daily Brief — " +
                 insight.getInsightDate().format(DateTimeFormatter.ofPattern("dd MMM yyyy"));
         String htmlBody = buildEmailHtml(insight);
 
-        sendHtmlEmail(toEmail, subject, htmlBody);
+        sendHtmlEmail(to, subject, htmlBody);
 
         insight.setEmailed(true);
         insightRepository.save(insight);
-        log.info("Daily brief email sent to {}", toEmail);
+        log.info("Daily brief email sent to {}", to);
     }
 
     /**
      * Send an after-hours portfolio summary email.
      */
     @Transactional
-    public void sendAfterHoursInsight(AiInsight insight, PortfolioSnapshot snapshot) {
+    public void sendAfterHoursInsight(AiInsight insight, PortfolioSnapshot snapshot, String recipientEmail) {
         if (insight == null || Boolean.TRUE.equals(insight.getEmailed())) return;
+        String to = resolveRecipient(recipientEmail);
+        if (to == null) return;
 
-        String portfolioSummary = getString(snapshot);
+        String portfolioSummary = buildPortfolioSummaryHtml(snapshot);
 
         String subject = "CFO After-Hours Review — " +
                 insight.getInsightDate().format(DateTimeFormatter.ofPattern("dd MMM yyyy"));
         String htmlBody = buildEmailHtml(insight, portfolioSummary);
 
-        sendHtmlEmail(toEmail, subject, htmlBody);
+        sendHtmlEmail(to, subject, htmlBody);
 
         insight.setEmailed(true);
         insightRepository.save(insight);
-        log.info("After-hours insight email sent to {}", toEmail);
+        log.info("After-hours insight email sent to {}", to);
     }
 
-    private static String getString(PortfolioSnapshot snapshot) {
-        String portfolioSummary = "";
-        if (snapshot != null) {
-            portfolioSummary = """
-                    <div style="background:#f4f6f8;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-family:monospace;">
-                    <strong>Portfolio Value:</strong> ₹%s &nbsp;|&nbsp;
-                    <strong>Day P&L:</strong> <span style="color:%s;">₹%s (%s%%)</span>
-                    </div>
-                    """.formatted(
-                    snapshot.getCurrentValue(),
-                    snapshot.getDayPnl() != null && snapshot.getDayPnl().signum() >= 0 ? "#1a7c3e" : "#c0392b",
-                    snapshot.getDayPnl(),
-                    snapshot.getDayPnlPercent()
-            );
-        }
-        return portfolioSummary;
+    private static String buildPortfolioSummaryHtml(PortfolioSnapshot snapshot) {
+        if (snapshot == null) return "";
+        return """
+                <div style="background:#f4f6f8;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-family:monospace;">
+                <strong>Portfolio Value:</strong> ₹%s &nbsp;|&nbsp;
+                <strong>Day P&L:</strong> <span style="color:%s;">₹%s (%s%%)</span>
+                </div>
+                """.formatted(
+                snapshot.getCurrentValue(),
+                snapshot.getDayPnl() != null && snapshot.getDayPnl().signum() >= 0 ? "#1a7c3e" : "#c0392b",
+                snapshot.getDayPnl(),
+                snapshot.getDayPnlPercent()
+        );
     }
 
     /**
      * Send a portfolio alert (e.g., major drop detected).
      */
-    public void sendPortfolioAlert(String alertTitle, String alertBody) {
+    public void sendPortfolioAlert(String alertTitle, String alertBody, String recipientEmail) {
+        String to = resolveRecipient(recipientEmail);
+        if (to == null) return;
         String subject = "CFO Alert: " + alertTitle;
         String html = buildEmailHtml(alertTitle, alertBody);
-        sendHtmlEmail(toEmail, subject, html);
+        sendHtmlEmail(to, subject, html);
         log.info("Portfolio alert email sent: {}", alertTitle);
+    }
+
+    private String resolveRecipient(String recipientEmail) {
+        if (recipientEmail != null && !recipientEmail.isBlank()) return recipientEmail;
+        if (fallbackEmail != null && !fallbackEmail.isBlank()) return fallbackEmail;
+        log.warn("No recipient email configured; skipping email send");
+        return null;
     }
 
     // ── HTML Templates ────────────────────────────────────────────────────────
@@ -111,10 +118,7 @@ public class   EmailNotificationService {
     }
 
     private String buildEmailHtml(AiInsight insight, String extraHtml) {
-        String markdownContent = insight.getContent();
-        // Convert basic Markdown to HTML
-        String htmlContent = markdownToBasicHtml(markdownContent);
-
+        String htmlContent = markdownToBasicHtml(insight.getContent());
         return wrapInEmailLayout(insight.getTitle(), extraHtml + htmlContent);
     }
 
@@ -151,14 +155,13 @@ public class   EmailNotificationService {
                       <p>%s</p>
                     </div>
                     <div class="body">%s</div>
-                    <div class="footer">Generated by your Personal CFO &mdash; Powered by DeepSeek R1 via Ollama</div>
+                    <div class="footer">Generated by your Personal CFO &mdash; Powered by AI</div>
                   </div>
                 </body>
                 </html>
                 """.formatted(title, bodyContent);
     }
 
-    /** Very lightweight Markdown → HTML (handles headers, bold, bullets, code). */
     private String markdownToBasicHtml(String md) {
         if (md == null) return "";
         return md
