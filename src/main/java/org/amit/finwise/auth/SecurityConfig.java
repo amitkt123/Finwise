@@ -35,6 +35,9 @@ public class SecurityConfig {
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         // Admin/ops-only endpoints
                         .requestMatchers(
+                                "/api/admin/**",
+                                "/api/policy-intelligence/sync",
+                                "/api/policy-intelligence/sync/**",
                                 "/api/marketdata/**",
                                 "/api/cfo/macro-series/**",
                                 "/api/data-quality/**",

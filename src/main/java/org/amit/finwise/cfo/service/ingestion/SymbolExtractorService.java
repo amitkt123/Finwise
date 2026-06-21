@@ -7,6 +7,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -46,6 +49,9 @@ public class SymbolExtractorService {
 
     /** All known aliases sorted longest-first (for greedy text matching) */
     private List<String> sortedAliases = List.of();
+
+    /** Raw bytes of the currently active gazetteer CSV (classpath original or last upload). */
+    private volatile byte[] rawGazetteerCsv = new byte[0];
 
     /**
      * Pre-compiled word-boundary pattern per alias.
@@ -476,8 +482,10 @@ public class SymbolExtractorService {
                 log.warn("Gazetteer CSV not found at configured path; using builtins only");
                 return;
             }
+            byte[] bytes = gazetteerResource.getInputStream().readAllBytes();
+            rawGazetteerCsv = bytes;
             try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(gazetteerResource.getInputStream(), StandardCharsets.UTF_8))) {
+                    new InputStreamReader(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8))) {
                 reader.lines()
                         .filter(line -> !line.isBlank() && !line.startsWith("#"))
                         .forEach(this::parseGazetteerLine);
@@ -485,6 +493,34 @@ public class SymbolExtractorService {
         } catch (Exception e) {
             log.warn("Failed to load gazetteer CSV: {}", e.getMessage());
         }
+    }
+
+    public synchronized void reloadGazetteer(InputStream is) throws IOException {
+        byte[] bytes = is.readAllBytes();
+        aliasTrie.clear();
+        symbolMap.clear();
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8))) {
+            reader.lines()
+                    .filter(line -> !line.isBlank() && !line.startsWith("#"))
+                    .forEach(this::parseGazetteerLine);
+        }
+        loadBuiltinSymbols();
+        sortedAliases = aliasTrie.keySet().stream()
+                .sorted((a, b) -> Integer.compare(b.length(), a.length()))
+                .toList();
+        Map<String, Pattern> newPatterns = new HashMap<>();
+        for (String alias : aliasTrie.keySet()) {
+            newPatterns.put(alias,
+                    Pattern.compile("\\b" + Pattern.quote(alias) + "\\b", Pattern.CASE_INSENSITIVE));
+        }
+        aliasPatterns = newPatterns;
+        rawGazetteerCsv = bytes;
+        log.info("SymbolExtractor reloaded: {} aliases, {} symbols", aliasTrie.size(), symbolMap.size());
+    }
+
+    public byte[] getRawGazetteerCsv() {
+        return rawGazetteerCsv;
     }
 
     private void parseGazetteerLine(String line) {

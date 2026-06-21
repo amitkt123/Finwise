@@ -12,6 +12,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -47,6 +50,9 @@ public class AttributionService {
     private final SymbolExtractorService symbolExtractorService;
     private final FactorProperties factorProperties;
     private final Resource benchmarkWeightsResource;
+
+    /** Raw bytes of the currently active sector weights CSV (classpath original or last upload). */
+    private volatile byte[] rawWeightsCsv = null;
 
     /** Trailing calendar months of attribution buckets. */
     static final int WINDOW_MONTHS = 12;
@@ -341,12 +347,14 @@ public class AttributionService {
         LocalDate asOf = null;
         double unmappedPct = 0.0;
         try {
-            if (!benchmarkWeightsResource.exists()) {
+            InputStream source = rawWeightsCsv != null
+                    ? new ByteArrayInputStream(rawWeightsCsv)
+                    : (benchmarkWeightsResource.exists() ? benchmarkWeightsResource.getInputStream() : null);
+            if (source == null) {
                 notes.add("BENCH_MISSING: nifty_sector_weights.csv not found");
                 return new BenchmarkWeights(byIndex, null, notes);
             }
-            try (BufferedReader r = new BufferedReader(new InputStreamReader(
-                    benchmarkWeightsResource.getInputStream(), StandardCharsets.UTF_8))) {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(source, StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = r.readLine()) != null) {
                     String t = line.trim();
@@ -379,6 +387,19 @@ public class AttributionService {
                     + "index (e.g. Others) — excluded from attribution", unmappedPct));
         }
         return new BenchmarkWeights(byIndex, asOf, notes);
+    }
+
+    public synchronized void reloadSectorWeights(InputStream is) throws IOException {
+        rawWeightsCsv = is.readAllBytes();
+        log.info("[Attribution] Sector weights reloaded ({} bytes)", rawWeightsCsv.length);
+    }
+
+    public byte[] getRawWeightsCsv() throws IOException {
+        if (rawWeightsCsv != null) return rawWeightsCsv;
+        if (benchmarkWeightsResource.exists()) {
+            return benchmarkWeightsResource.getInputStream().readAllBytes();
+        }
+        return new byte[0];
     }
 
     private record HoldingRef(String symbol, double value) {}

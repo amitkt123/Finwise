@@ -11,6 +11,9 @@ import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
@@ -56,6 +59,7 @@ public class StressScenarioService {
     private Resource scenariosResource;
 
     private List<Scenario> scenarios = List.of();
+    private volatile byte[] rawScenariosCsv = new byte[0];
 
     /** One named scenario: an ordered factor → shock-percent map (e.g. MKT → −13.0). */
     record Scenario(String id, String label, Map<String, Double> factorShocks) {
@@ -93,19 +97,39 @@ public class StressScenarioService {
             this.scenarios = List.of();
             return;
         }
-        // Preserve scenario order and factor order within each scenario.
+        try {
+            byte[] bytes = resource.getInputStream().readAllBytes();
+            rawScenariosCsv = bytes;
+            parseScenarioBytes(bytes);
+        } catch (Exception e) {
+            log.warn("[Stress] failed to load scenarios CSV: {}", e.getMessage());
+        }
+        log.info("[Stress] loaded {} stress scenarios", scenarios.size());
+    }
+
+    private void parseScenarioBytes(byte[] bytes) {
         Map<String, Scenario> byId = new LinkedHashMap<>();
         try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(resource.getInputStream(), StandardCharsets.UTF_8))) {
+                new InputStreamReader(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8))) {
             reader.lines()
                     .map(String::trim)
                     .filter(line -> !line.isBlank() && !line.startsWith("#"))
                     .forEach(line -> parseLine(line, byId));
         } catch (Exception e) {
-            log.warn("[Stress] failed to load scenarios CSV: {}", e.getMessage());
+            log.warn("[Stress] failed to parse scenarios CSV bytes: {}", e.getMessage());
         }
         this.scenarios = List.copyOf(byId.values());
-        log.info("[Stress] loaded {} stress scenarios", scenarios.size());
+    }
+
+    public synchronized void reloadScenarios(InputStream is) throws IOException {
+        byte[] bytes = is.readAllBytes();
+        parseScenarioBytes(bytes);
+        rawScenariosCsv = bytes;
+        log.info("[Stress] reloaded {} stress scenarios", scenarios.size());
+    }
+
+    public byte[] getRawScenariosCsv() {
+        return rawScenariosCsv;
     }
 
     private void parseLine(String line, Map<String, Scenario> byId) {

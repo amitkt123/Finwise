@@ -23,6 +23,8 @@ public interface PolicyDocumentRepository extends JpaRepository<PolicyDocument, 
 
     List<PolicyDocument> findTop20ByOrderByUpdatedAtDesc();
 
+    long countByStatus(PolicyDocumentStatus status);
+
     @Query("""
             SELECT d FROM PolicyDocument d
             WHERE (:authority IS NULL OR d.authority = :authority)

@@ -1,5 +1,6 @@
 package org.amit.finwise.policy.repository;
 
+import org.amit.finwise.policy.model.PolicyDocument;
 import org.amit.finwise.policy.model.PolicyImpact;
 import org.amit.finwise.policy.model.PolicySubjectType;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -14,6 +15,10 @@ import java.util.List;
 public interface PolicyImpactRepository extends JpaRepository<PolicyImpact, Long> {
 
     void deleteByVersion(org.amit.finwise.policy.model.PolicyDocumentVersion version);
+
+    void deleteByDocument(PolicyDocument document);
+
+    List<PolicyImpact> findByDocumentOrderByCreatedAtDesc(PolicyDocument document);
 
     @Query("""
             SELECT i FROM PolicyImpact i
