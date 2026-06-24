@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.service.insight;
 import org.amit.finwise.cfo.model.InsightCard;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.model.RiskDecomposition.RiskContributor;
+import org.amit.finwise.cfo.repository.DismissedInsightCardRepository;
 import org.amit.finwise.cfo.service.analytics.AttributionService;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
 import org.amit.finwise.cfo.service.analytics.LiquidityService;
@@ -52,6 +53,7 @@ class InsightCardServiceTest {
     @Mock FinancialGoalRepository goalRepository;
     @Mock LookThroughService lookThroughService;
     @Mock StockIntelligenceService stockIntelligenceService;
+    @Mock DismissedInsightCardRepository dismissedRepo;
 
     private InsightCardService service() {
         // No scored calls by default → cards keep their raw confidence (Phase C no-ops cleanly).
@@ -64,9 +66,10 @@ class InsightCardServiceTest {
         // all of which the generators treat as "no data" → no card, never a fabricated number.
         // Liquidity is likewise unstubbed → null spread map (zero impact). Tests that need any of
         // these stub them explicitly.
+        lenient().when(dismissedRepo.findByUserId(any())).thenReturn(java.util.Set.of());
         return new InsightCardService(portfolioRiskService, factorModelService,
                 varBacktestService, stressScenarioService, calibrationService,
-                liquidityService, new TradingCostService(), performanceService,
+                dismissedRepo, liquidityService, new TradingCostService(), performanceService,
                 attributionService, taxHarvestingService, monteCarloGoalService,
                 goalRepository, lookThroughService, stockIntelligenceService);
     }

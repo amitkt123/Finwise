@@ -12,6 +12,7 @@ import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.model.StockDeepDive;
 import org.amit.finwise.cfo.model.VarBacktestReport;
 import org.amit.finwise.cfo.model.VolForecast;
+import org.amit.finwise.cfo.repository.DismissedInsightCardRepository;
 import org.amit.finwise.cfo.service.InsightEvaluationService.CalibrationRow;
 import org.amit.finwise.cfo.service.analytics.AttributionService;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
@@ -38,6 +39,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * The insight-card generator catalog (Honest-Insights Phase B2).
@@ -62,6 +65,7 @@ public class InsightCardService {
     private final VarBacktestService varBacktestService;
     private final StressScenarioService stressScenarioService;
     private final ConfidenceCalibrationService calibrationService;
+    private final DismissedInsightCardRepository dismissedRepo;
     private final LiquidityService liquidityService;
     private final TradingCostService tradingCostService;
     private final PortfolioPerformanceService performanceService;
@@ -133,7 +137,12 @@ public class InsightCardService {
         lookThroughCard(safeGet(() -> lookThroughService.compute(userId).orElse(null))).ifPresent(cards::add);
 
         cards.sort(Comparator.comparingInt((InsightCard c) -> c.severity().ordinal()).reversed());
-        return calibrate(cards);
+        Set<String> dismissed = dismissedRepo.findByUserId(userId).stream()
+                .map(org.amit.finwise.cfo.model.DismissedInsightCard::getCardId)
+                .collect(Collectors.toSet());
+        return calibrate(cards).stream()
+                .filter(c -> !dismissed.contains(c.id()))
+                .toList();
     }
 
     /**
