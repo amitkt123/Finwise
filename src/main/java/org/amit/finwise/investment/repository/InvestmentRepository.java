@@ -29,4 +29,7 @@ public interface InvestmentRepository extends JpaRepository<Investment, Long> {
 
     @Query("SELECT DISTINCT i.symbol FROM Investment i WHERE i.isActive = true AND i.symbol IS NOT NULL")
     List<String> findAllActiveSymbols();
+
+    @Query("SELECT DISTINCT i.userId FROM Investment i WHERE i.isActive = true AND i.userId IS NOT NULL")
+    List<String> findDistinctActiveUserIds();
 }

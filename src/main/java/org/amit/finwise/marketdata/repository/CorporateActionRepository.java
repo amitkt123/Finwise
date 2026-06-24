@@ -23,4 +23,7 @@ public interface CorporateActionRepository extends JpaRepository<CorporateAction
     /** Instrument ids that have at least one corporate action (for full recompute). */
     @Query("SELECT DISTINCT c.instrumentId FROM CorporateAction c WHERE c.instrumentId IS NOT NULL")
     List<Long> findDistinctInstrumentIds();
+
+    /** All corporate actions for a symbol, newest ex-date first — drives the company-view history card. */
+    List<CorporateAction> findBySymbolOrderByExDateDesc(String symbol);
 }

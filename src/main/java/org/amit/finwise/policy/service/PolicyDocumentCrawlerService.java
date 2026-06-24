@@ -73,6 +73,7 @@ public class PolicyDocumentCrawlerService {
     private final PolicySourceProperties properties;
     private final DocumentParserService documentParserService;
     private final PolicyIntelligenceService policyIntelligenceService;
+    private final PolicyImpactExtractionService policyImpactExtractionService;
 
     @Transactional
     public SyncResult syncAll() {
@@ -320,8 +321,11 @@ public class PolicyDocumentCrawlerService {
                 canonicalArtifactUrl
         );
         String externalDocumentId = buildExternalDocumentId(canonicalSourceUrl, canonicalArtifactUrl);
+        // Phase 2.4: prefer LLM-extracted impacts; fall back to the deterministic rules.
         List<PolicyIntelligenceService.PolicyImpactDraft> impacts =
-                inferImpacts(authority, policyArea, title, normalizedText, effectiveDate);
+                policyImpactExtractionService.extract(policyArea, title, normalizedText, effectiveDate)
+                        .filter(list -> !list.isEmpty())
+                        .orElseGet(() -> inferImpacts(authority, policyArea, title, normalizedText, effectiveDate));
 
         return new PolicyFetchPayload(
                 buildDocumentKey(authority, sourceReference, externalDocumentId, canonicalSourceUrl),

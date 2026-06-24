@@ -16,6 +16,11 @@ public interface PolicyImpactRepository extends JpaRepository<PolicyImpact, Long
 
     void deleteByVersion(org.amit.finwise.policy.model.PolicyDocumentVersion version);
 
+    List<PolicyImpact> findByVersion(org.amit.finwise.policy.model.PolicyDocumentVersion version);
+
+    @Query("SELECT i FROM PolicyImpact i WHERE i.version.id = :versionId")
+    List<PolicyImpact> findByVersionId(@Param("versionId") Long versionId);
+
     void deleteByDocument(PolicyDocument document);
 
     List<PolicyImpact> findByDocumentOrderByCreatedAtDesc(PolicyDocument document);

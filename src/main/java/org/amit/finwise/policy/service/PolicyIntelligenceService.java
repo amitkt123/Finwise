@@ -34,6 +34,10 @@ public class PolicyIntelligenceService {
     private final PolicyChunkingService chunkingService;
     private final InvestmentRepository investmentRepository;
     private final FinancialGoalRepository goalRepository;
+    private final PolicyEmbeddingService policyEmbeddingService;
+    private final PolicyHybridRetriever hybridRetriever;
+    private final PolicyDiffService policyDiffService;
+    private final PolicyNotificationService policyNotificationService;
 
     @Transactional
     public PolicyDocument ingestDocument(PolicyIngestionRequest request) {
@@ -113,8 +117,9 @@ public class PolicyIntelligenceService {
         documentRepository.save(document);
 
         List<PolicyChunkingService.ChunkDraft> chunkDrafts = chunkingService.chunk(normalizedText);
+        List<PolicyChunk> savedChunks = new ArrayList<>();
         for (PolicyChunkingService.ChunkDraft draft : chunkDrafts) {
-            chunkRepository.save(PolicyChunk.builder()
+            savedChunks.add(chunkRepository.save(PolicyChunk.builder()
                     .version(version)
                     .chunkIndex(draft.chunkIndex())
                     .heading(draft.heading())
@@ -122,10 +127,20 @@ public class PolicyIntelligenceService {
                     .citationLabel(draft.citationLabel())
                     .content(draft.content())
                     .keywordText(draft.keywordText())
-                    .build());
+                    .build()));
         }
 
+        // Phase 2.1: embed the new version's chunks for hybrid retrieval (no-op when pgvector absent).
+        policyEmbeddingService.embedAndStoreAll(savedChunks);
+
         syncImpacts(document, version, request.impacts());
+
+        // Phase 3.1: async diff when superseding a previous version.
+        Long prevVersionId = currentVersionOpt.map(PolicyDocumentVersion::getId).orElse(null);
+        policyDiffService.diffAsync(document.getId(), prevVersionId, version.getId());
+
+        // Phase 3.2: async notification for high-impact ingest.
+        policyNotificationService.notifyAsync(document.getId(), version.getId());
         log.info("[Policy] Ingested document key={}, version={}, chunks={}",
                 document.getDocumentKey(), nextVersionNumber, chunkDrafts.size());
         return document;
@@ -140,7 +155,7 @@ public class PolicyIntelligenceService {
         }
 
         List<PolicyDocument> documents = limit(documentRepository.search(trimmed), limit);
-        List<PolicyChunk> chunks = limit(chunkRepository.searchCurrentChunks(trimmed), limit);
+        List<PolicyChunk> chunks = hybridRetriever.retrieve(trimmed, limit);
         List<PolicyImpact> impacts = limit(impactRepository.searchActiveImpacts(trimmed, LocalDate.now()), limit);
         return new PolicySearchResult(
                 toDocumentSummaries(documents),
@@ -197,7 +212,7 @@ public class PolicyIntelligenceService {
             if (matchedChunks.size() >= limit) {
                 break;
             }
-            List<PolicyChunk> found = chunkRepository.searchCurrentChunks(term);
+            List<PolicyChunk> found = hybridRetriever.retrieve(term, limit);
             for (PolicyChunk chunk : found) {
                 if (matchedChunks.stream().noneMatch(existing -> existing.getId().equals(chunk.getId()))) {
                     matchedChunks.add(chunk);
@@ -218,6 +233,43 @@ public class PolicyIntelligenceService {
                 toDocumentSummaries(documents),
                 toPolicyEventCards(matchedImpacts),
                 toChunkMatches(matchedChunks));
+    }
+
+    /**
+     * Stock-level policy exposure (Roadmap Phase 2.3) — the bridge that closes the
+     * single-company loop. Given a stock's resolved sector, factor exposures and
+     * asset classes (computed caller-side from the gazetteer), it returns the
+     * currently-active {@link PolicyEventCard}s whose subjects match, ranked by
+     * market-moving power. Feeds Phase 1 Card 6.
+     */
+    @Transactional(readOnly = true)
+    public List<PolicyEventCard> getStockPolicyExposure(String sector,
+                                                        Set<String> factors,
+                                                        Set<String> assetClasses,
+                                                        int limit) {
+        LocalDate today = LocalDate.now();
+        Map<Long, PolicyImpact> byId = new LinkedHashMap<>();
+
+        if (sector != null && !sector.isBlank()) {
+            for (PolicyImpact impact : impactRepository.findActiveImpactsForSubjects(
+                    PolicySubjectType.SECTOR, Set.of(sector.trim()), today)) {
+                if (impact.getId() != null) byId.putIfAbsent(impact.getId(), impact);
+            }
+        }
+        if (factors != null && !factors.isEmpty()) {
+            for (PolicyImpact impact : impactRepository.findActiveImpactsForSubjects(
+                    PolicySubjectType.FACTOR, factors, today)) {
+                if (impact.getId() != null) byId.putIfAbsent(impact.getId(), impact);
+            }
+        }
+        if (assetClasses != null && !assetClasses.isEmpty()) {
+            for (PolicyImpact impact : impactRepository.findActiveImpactsForSubjects(
+                    PolicySubjectType.ASSET_CLASS, assetClasses, today)) {
+                if (impact.getId() != null) byId.putIfAbsent(impact.getId(), impact);
+            }
+        }
+
+        return limit(toPolicyEventCards(new ArrayList<>(byId.values())), limit);
     }
 
     private List<PolicyImpact> findSubjectImpacts(PolicySubjectType subjectType,

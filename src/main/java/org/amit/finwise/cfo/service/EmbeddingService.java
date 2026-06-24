@@ -222,6 +222,28 @@ public class EmbeddingService {
         }
     }
 
+    /**
+     * Embed a search query (query mode) using the same model/dimension as documents.
+     * Returns null when pgvector/Ollama is unavailable. Reused by the policy hybrid
+     * retriever for the vector half of retrieval.
+     */
+    public float[] embedQuery(String text) {
+        if (!pgvectorAvailable) return null;
+        String q = QUERY_PREFIX + (text != null ? text : "");
+        if (q.length() > MAX_EMBED_CHARS) q = q.substring(0, MAX_EMBED_CHARS);
+        try {
+            return callEmbeddingApi(q);
+        } catch (Exception e) {
+            log.warn("Query embed failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** Embedding vector dimensionality (model-dependent). */
+    public int embeddingDimension() {
+        return EMBEDDING_DIM;
+    }
+
     /** Persist an article embedding (public entry point for the clustering pipeline). */
     public void storeEmbedding(Long articleId, float[] embedding) {
         if (!pgvectorAvailable || embedding == null) return;
