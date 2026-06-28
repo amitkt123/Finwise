@@ -12,6 +12,9 @@ import org.amit.finwise.policy.repository.PolicyChunkRepository;
 import org.amit.finwise.policy.repository.PolicyDocumentRepository;
 import org.amit.finwise.policy.repository.PolicyDocumentVersionRepository;
 import org.amit.finwise.policy.repository.PolicyImpactRepository;
+import org.amit.finwise.cfo.service.macro.PolicyQuantSignalService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,6 +41,10 @@ public class PolicyIntelligenceService {
     private final PolicyHybridRetriever hybridRetriever;
     private final PolicyDiffService policyDiffService;
     private final PolicyNotificationService policyNotificationService;
+
+    @Lazy
+    @Autowired
+    private PolicyQuantSignalService policyQuantSignalService;
 
     @Transactional
     public PolicyDocument ingestDocument(PolicyIngestionRequest request) {
@@ -157,10 +164,12 @@ public class PolicyIntelligenceService {
         List<PolicyDocument> documents = limit(documentRepository.search(trimmed), limit);
         List<PolicyChunk> chunks = hybridRetriever.retrieve(trimmed, limit);
         List<PolicyImpact> impacts = limit(impactRepository.searchActiveImpacts(trimmed, LocalDate.now()), limit);
+        List<PolicyEventCard> cards = toPolicyEventCards(impacts);
+        policyQuantSignalService.process(cards);
         return new PolicySearchResult(
                 toDocumentSummaries(documents),
                 toChunkMatches(chunks),
-                toPolicyEventCards(impacts));
+                cards);
     }
 
     @Transactional(readOnly = true)
@@ -229,9 +238,11 @@ public class PolicyIntelligenceService {
                 .limit(limit)
                 .toList();
 
+        List<PolicyEventCard> advisorCards = toPolicyEventCards(matchedImpacts);
+        policyQuantSignalService.process(advisorCards);
         return new AdvisorPolicyContext(
                 toDocumentSummaries(documents),
-                toPolicyEventCards(matchedImpacts),
+                advisorCards,
                 toChunkMatches(matchedChunks));
     }
 
