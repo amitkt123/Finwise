@@ -13,8 +13,6 @@ import org.amit.finwise.policy.repository.PolicyDocumentRepository;
 import org.amit.finwise.policy.repository.PolicyDocumentVersionRepository;
 import org.amit.finwise.policy.repository.PolicyImpactRepository;
 import org.amit.finwise.cfo.service.macro.PolicyQuantSignalService;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,9 +40,7 @@ public class PolicyIntelligenceService {
     private final PolicyDiffService policyDiffService;
     private final PolicyNotificationService policyNotificationService;
 
-    @Lazy
-    @Autowired
-    private PolicyQuantSignalService policyQuantSignalService;
+    private final PolicyQuantSignalService policyQuantSignalService;
 
     @Transactional
     public PolicyDocument ingestDocument(PolicyIngestionRequest request) {
