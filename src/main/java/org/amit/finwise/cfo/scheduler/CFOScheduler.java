@@ -13,12 +13,15 @@ import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
+import org.amit.finwise.cfo.model.MacroSeriesCode;
 import org.amit.finwise.cfo.service.macro.MacroSeriesService;
 import org.amit.finwise.cfo.service.macro.MacroStateService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.service.notification.EmailNotificationService;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Slf4j
@@ -36,6 +39,7 @@ public class CFOScheduler {
     private final MarketContextService marketContextService;
     private final MacroStateService macroStateService;
     private final MacroSeriesService macroSeriesService;
+    private final QuantitativeMacroState quantitativeMacroState;
     private final org.amit.finwise.cfo.service.research.PeerUniverseService peerUniverseService;
     private final org.amit.finwise.cfo.service.rag.EventOutcomeService eventOutcomeService;
     private final org.amit.finwise.cfo.service.InsightEvaluationService insightEvaluationService;
@@ -146,6 +150,23 @@ public class CFOScheduler {
                     factorIndices.size(), saved);
         } catch (Exception e) {
             log.error("[CFO] Factor index fetch failed: {}", e.getMessage());
+        }
+
+        applyFbilRate();
+    }
+
+    // At 16:00 IST, after priceSync runs, apply FBIL rate automatically
+    private void applyFbilRate() {
+        try {
+            macroSeriesService.latest(MacroSeriesCode.REPO_RATE)
+                .map(BigDecimal::doubleValue)
+                .filter(r -> r > 0.01 && r < 0.20)
+                .ifPresent(r -> {
+                    quantitativeMacroState.setRiskFreeRate(r / 100.0, "FBIL");
+                    log.info("[MacroState] FBIL REPO_RATE applied: {}", r);
+                });
+        } catch (Exception e) {
+            log.error("[MacroState] FBIL auto-apply failed: {}", e.getMessage());
         }
     }
 
