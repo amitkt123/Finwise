@@ -160,7 +160,7 @@ public class CFOScheduler {
         try {
             macroSeriesService.latest(MacroSeriesCode.REPO_RATE)
                 .map(BigDecimal::doubleValue)
-                .filter(r -> r > 0.01 && r < 0.20)
+                .filter(r -> r > 1.0 && r < 20.0)
                 .ifPresent(r -> {
                     quantitativeMacroState.setRiskFreeRate(r / 100.0, "FBIL");
                     log.info("[MacroState] FBIL REPO_RATE applied: {}", r);
