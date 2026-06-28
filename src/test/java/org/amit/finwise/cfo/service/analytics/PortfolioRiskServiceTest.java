@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.service.analytics;
 import org.amit.finwise.cfo.config.RiskProperties;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.service.StockPriceService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,6 +24,8 @@ import java.util.TreeMap;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 /**
@@ -44,9 +47,12 @@ class PortfolioRiskServiceTest {
     @BeforeEach
     void setUp() {
         RiskProperties riskProperties = new RiskProperties();
+        QuantitativeMacroState macroState = mock(QuantitativeMacroState.class);
+        // lenient: interpolatedQuantile_* tests call static methods without using compute()
+        lenient().when(macroState.getRiskFreeRate()).thenReturn(riskProperties.getRiskFreeRate());
         service = new PortfolioRiskService(
                 returnSeriesService, new CovarianceEngine(), investmentRepository, riskProperties,
-                new GarchService(riskProperties));
+                macroState, new GarchService(riskProperties));
     }
 
     @Test

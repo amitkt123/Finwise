@@ -4,6 +4,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.config.RiskProperties;
 import org.amit.finwise.cfo.model.RiskDecomposition;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.model.VolForecast;
 import org.amit.finwise.cfo.service.StockPriceService;
 import org.amit.finwise.investment.model.Investment;
@@ -40,6 +41,7 @@ public class PortfolioRiskService {
     private final CovarianceEngine covarianceEngine;
     private final InvestmentRepository investmentRepository;
     private final RiskProperties riskProperties;
+    private final QuantitativeMacroState macroState;
     private final GarchService garchService;
 
     private static final double SQRT_252 = Math.sqrt(252.0);
@@ -306,7 +308,7 @@ public class PortfolioRiskService {
         // Geometric (compound) annualization; arithmetic mean × 252 understates
         // the annual figure for high-return portfolios.
         double annualizedReturn = Math.pow(1.0 + meanDailyReturn, ANNUAL_DAYS) - 1.0;
-        double riskFreeRate = riskProperties.getRiskFreeRate();
+        double riskFreeRate = macroState.getRiskFreeRate();
         double sharpe = annualizedVol > 0
                 ? (annualizedReturn - riskFreeRate) / annualizedVol : Double.NaN;
 
