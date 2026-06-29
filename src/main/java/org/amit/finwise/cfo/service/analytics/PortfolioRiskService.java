@@ -410,7 +410,12 @@ public class PortfolioRiskService {
     public Optional<VolForecast> forwardRisk(String userId) {
         double[] portfolioReturns = portfolioReturnSeries(userId);
         if (portfolioReturns == null || portfolioReturns.length < 2) return Optional.empty();
-        return Optional.of(garchService.fit(portfolioReturns));
+        VolForecast vf = garchService.fit(portfolioReturns);
+        if (macroState.getCrisisProbability() > 0.60) {
+            vf.notes().add("REGIME_ELEVATED: crisis probability %.0f%%"
+                    .formatted(macroState.getCrisisProbability() * 100));
+        }
+        return Optional.of(vf);
     }
 
     /**

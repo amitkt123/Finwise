@@ -25,6 +25,7 @@ import org.amit.finwise.cfo.service.analytics.StressScenarioService;
 import org.amit.finwise.cfo.service.analytics.StressScenarioService.StressResult;
 import org.amit.finwise.cfo.service.analytics.TradingCostService;
 import org.amit.finwise.cfo.service.analytics.VarBacktestService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.service.research.StockIntelligenceService;
 import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.model.GoalSimulationResult;
@@ -75,6 +76,7 @@ public class InsightCardService {
     private final FinancialGoalRepository goalRepository;
     private final LookThroughService lookThroughService;
     private final StockIntelligenceService stockIntelligenceService;
+    private final QuantitativeMacroState macroState;
 
     /** %RC at/above which trimming a single contributor becomes an ACTION rather than WATCH. */
     private static final double CONCENTRATED_RC = 0.25;
@@ -753,6 +755,12 @@ public class InsightCardService {
             List<String> caveats = new ArrayList<>();
             if (r.lowConfidence()) caveats.add("LOW_CONFIDENCE: drift/vol fell back to planning defaults");
             if (r.notes() != null) caveats.addAll(r.notes());
+            if (r.regimeAdjusted()) {
+                caveats.add("Vol elevated by regime signal (crisis prob %.0f%%) — σ_eff %.1f%% vs historical %.1f%%. SIP estimates are conservative."
+                        .formatted(macroState.getCrisisProbability() * 100,
+                                   r.effectiveSigma() * 100,
+                                   r.annualVolatility() * 100));
+            }
 
             out.add(InsightCard.builder("goal-" + goal.getId(), InsightCard.Category.GOAL, sev)
                     .title(title)

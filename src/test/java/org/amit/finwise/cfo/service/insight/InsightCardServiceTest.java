@@ -13,6 +13,7 @@ import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.StressScenarioService;
 import org.amit.finwise.cfo.service.analytics.TradingCostService;
 import org.amit.finwise.cfo.service.analytics.VarBacktestService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.service.research.StockIntelligenceService;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.goal.service.MonteCarloGoalService;
@@ -54,6 +55,7 @@ class InsightCardServiceTest {
     @Mock LookThroughService lookThroughService;
     @Mock StockIntelligenceService stockIntelligenceService;
     @Mock DismissedInsightCardRepository dismissedRepo;
+    @Mock QuantitativeMacroState macroState;
 
     private InsightCardService service() {
         // No scored calls by default → cards keep their raw confidence (Phase C no-ops cleanly).
@@ -71,7 +73,7 @@ class InsightCardServiceTest {
                 varBacktestService, stressScenarioService, calibrationService,
                 dismissedRepo, liquidityService, new TradingCostService(), performanceService,
                 attributionService, taxHarvestingService, monteCarloGoalService,
-                goalRepository, lookThroughService, stockIntelligenceService);
+                goalRepository, lookThroughService, stockIntelligenceService, macroState);
     }
 
     @Test
