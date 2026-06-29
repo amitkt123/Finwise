@@ -3,6 +3,7 @@ package org.amit.finwise.goal.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.goal.config.GoalMcProperties;
 import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.model.GoalSimulationResult;
@@ -41,6 +42,7 @@ public class MonteCarloGoalService {
 
     private final PortfolioRiskService portfolioRiskService;
     private final GoalMcProperties props;
+    private final QuantitativeMacroState macroState;
 
     private static final double DT = 1.0 / 12.0;
     private static final double SQRT_DT = Math.sqrt(DT);
@@ -93,8 +95,34 @@ public class MonteCarloGoalService {
                     mu * 100, sigma * 100));
         }
 
+        // ── Regime-conditional σ/μ adjustment from QuantitativeMacroState ────────
+        boolean regimeAdjusted = false;
+        double effectiveSigma = sigma;
+        if (macroState != null) {
+            double p = macroState.getCrisisProbability();
+            double sigmaCalm = macroState.getRegimeVolCalm();
+            double sigmaCrisis = macroState.getRegimeVolCrisis();
+
+            if (!Double.isNaN(sigmaCalm) && !Double.isNaN(sigmaCrisis) && p > 0.0) {
+                effectiveSigma = (1 - p) * sigmaCalm + p * sigmaCrisis;
+                regimeAdjusted = true;
+                // Drift penalty: 4% annual drag at p=1.0
+                mu = mu - p * 0.04;
+                notes.add(String.format(
+                        "REGIME_BLEND: p_crisis=%.2f, σ_calm=%.1f%%, σ_crisis=%.1f%% → σ_eff=%.1f%%",
+                        p, sigmaCalm * 100, sigmaCrisis * 100, effectiveSigma * 100));
+            }
+
+            // Yield curve real-rate floor
+            double yieldFloor = macroState.getYieldCurve10y();
+            if (!Double.isNaN(yieldFloor) && goal.getInflationRate() != null && goal.getInflationRate().doubleValue() > 0) {
+                mu = Math.max(mu, yieldFloor - goal.getInflationRate().doubleValue() / 100.0);
+            }
+        }
+        sigma = effectiveSigma;
+
         return simulateGbm(corpus0, sip, mu, sigma, (int) months, target,
-                props.getSeed(), lowConfidence, notes);
+                props.getSeed(), lowConfidence, regimeAdjusted, notes);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -106,7 +134,15 @@ public class MonteCarloGoalService {
                                      int months, double target, long seed,
                                      boolean lowConfidence, List<String> notes) {
         PathSimulator sim = (s, sd) -> gbmFinalCorpuses(corpus0, s, mu, sigma, months, sd);
-        return assemble("GBM", months, mu, sigma, lowConfidence, sip, target, seed, sim, notes);
+        return assemble("GBM", months, mu, sigma, lowConfidence, false, sip, target, seed, sim, notes);
+    }
+
+    /** GBM simulation and full result assembly (with regime-adjustment flag). */
+    GoalSimulationResult simulateGbm(double corpus0, double sip, double mu, double sigma,
+                                     int months, double target, long seed,
+                                     boolean lowConfidence, boolean regimeAdjusted, List<String> notes) {
+        PathSimulator sim = (s, sd) -> gbmFinalCorpuses(corpus0, s, mu, sigma, months, sd);
+        return assemble("GBM", months, mu, sigma, lowConfidence, regimeAdjusted, sip, target, seed, sim, notes);
     }
 
     /** Historical-bootstrap simulation and full result assembly. */
@@ -115,7 +151,7 @@ public class MonteCarloGoalService {
         double mu = annualizedFromMonthly(monthlyReturns, true);
         double sigma = annualizedFromMonthly(monthlyReturns, false);
         PathSimulator sim = (s, sd) -> bootstrapFinalCorpuses(corpus0, s, monthlyReturns, months, sd);
-        return assemble("BOOTSTRAP", months, mu, sigma, false, sip, target, seed, sim, notes);
+        return assemble("BOOTSTRAP", months, mu, sigma, false, false, sip, target, seed, sim, notes);
     }
 
     @FunctionalInterface
@@ -125,7 +161,8 @@ public class MonteCarloGoalService {
     }
 
     private GoalSimulationResult assemble(String mode, int months, double mu, double sigma,
-                                          boolean lowConfidence, double sip, double target,
+                                          boolean lowConfidence, boolean regimeAdjusted,
+                                          double sip, double target,
                                           long seed, PathSimulator sim, List<String> notes) {
         double[] finals = sim.finalCorpuses(sip, seed);
         Arrays.sort(finals);
@@ -147,7 +184,8 @@ public class MonteCarloGoalService {
                 quantile(finals, 0.10), quantile(finals, 0.25), quantile(finals, 0.50),
                 quantile(finals, 0.75), quantile(finals, 0.90),
                 requiredSip50, requiredSip75, requiredSip90,
-                headline, List.copyOf(notes));
+                headline, List.copyOf(notes),
+                regimeAdjusted, sigma);
     }
 
     // ── Path generation ──────────────────────────────────────────────────────

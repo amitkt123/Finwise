@@ -25,7 +25,7 @@ class MonteCarloGoalServiceTest {
     }
 
     private MonteCarloGoalService service(GoalMcProperties p) {
-        return new MonteCarloGoalService(null, p);
+        return new MonteCarloGoalService(null, p, null);
     }
 
     @Test

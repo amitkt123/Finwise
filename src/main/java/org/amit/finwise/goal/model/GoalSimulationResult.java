@@ -38,5 +38,7 @@ public record GoalSimulationResult(
         double requiredSip90,
 
         String headline,
-        List<String> notes
+        List<String> notes,
+        boolean regimeAdjusted,    // true when crisis probability > 0 changed σ_eff
+        double effectiveSigma      // σ actually used in simulation (regime-blended or historical)
 ) {}

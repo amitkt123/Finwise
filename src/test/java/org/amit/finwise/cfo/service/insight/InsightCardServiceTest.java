@@ -250,7 +250,7 @@ class InsightCardServiceTest {
         var result = new org.amit.finwise.goal.model.GoalSimulationResult(
                 "GBM", 10_000, 240, 0.10, 0.15, false, 25_000, 50_000_000,
                 0.35, 30_000_000, 38_000_000, 45_000_000, 53_000_000, 62_000_000,
-                40_000, 55_000, 70_000, null, List.of());
+                40_000, 55_000, 70_000, null, List.of(), false, 0.15);
         when(goalRepository.findActiveGoals("u")).thenReturn(List.of(goal));
         when(monteCarloGoalService.simulate(goal, null)).thenReturn(result);
 
