@@ -4,7 +4,9 @@ import lombok.RequiredArgsConstructor;
 import org.amit.finwise.cfo.model.macro.PolicyQuantSignalQueueEntry;
 import org.amit.finwise.cfo.model.macro.PolicyQuantSignalQueueEntry.SignalStatus;
 import org.amit.finwise.cfo.repository.macro.PolicyQuantSignalRepository;
+import org.amit.finwise.cfo.service.analytics.StressScenarioService;
 import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -32,6 +34,7 @@ public class AdminMacroStateController {
 
     private final QuantitativeMacroState macroState;
     private final PolicyQuantSignalRepository signalRepo;
+    private final StressScenarioService stressScenarioService;
 
     @GetMapping("/macro-state")
     public Map<String, Object> currentState() {
@@ -97,5 +100,23 @@ public class AdminMacroStateController {
             signalRepo.save(entry);
             return ResponseEntity.ok(entry);
         }).orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/policy-signals/transmission-table")
+    public ResponseEntity<byte[]> downloadTransmissionTable() throws Exception {
+        var resource = new ClassPathResource("data/policy_transmission.csv");
+        return ResponseEntity.ok()
+                .header("Content-Disposition", "attachment; filename=policy_transmission.csv")
+                .body(resource.getContentAsByteArray());
+    }
+
+    @PostMapping("/policy-signals/transmission-table")
+    public ResponseEntity<?> reloadTransmissionTable(@RequestBody byte[] csv) {
+        try {
+            stressScenarioService.reloadScenarios(new java.io.ByteArrayInputStream(csv));
+            return ResponseEntity.ok(Map.of("status", "reloaded"));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 }

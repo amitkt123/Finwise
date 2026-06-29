@@ -2,6 +2,7 @@ package org.amit.finwise.cfo.service.analytics;
 
 import org.amit.finwise.cfo.model.FactorRiskReport;
 import org.amit.finwise.cfo.service.analytics.StressScenarioService.StressResult;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.junit.jupiter.api.Test;
@@ -30,11 +31,13 @@ class StressScenarioServiceTest {
 
     @Mock FactorModelService factorModelService;
     @Mock InvestmentRepository investmentRepository;
+    @Mock QuantitativeMacroState macroState;
 
     private static final double V = 1_000_000.0;
 
     private StressScenarioService service() {
-        StressScenarioService s = new StressScenarioService(factorModelService, investmentRepository);
+        lenient().when(macroState.getPolicyRateShocks()).thenReturn(Map.of());
+        StressScenarioService s = new StressScenarioService(factorModelService, investmentRepository, macroState);
         s.loadScenarios(new ClassPathResource("data/stress_scenarios.csv"));
         return s;
     }

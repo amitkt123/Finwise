@@ -4,6 +4,7 @@ import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.FactorRiskReport;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.beans.factory.annotation.Value;
@@ -19,6 +20,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +56,7 @@ public class StressScenarioService {
 
     private final FactorModelService factorModelService;
     private final InvestmentRepository investmentRepository;
+    private final QuantitativeMacroState macroState;
 
     @Value("${cfo.stress.scenarios-path:classpath:data/stress_scenarios.csv}")
     private Resource scenariosResource;
@@ -79,7 +82,9 @@ public class StressScenarioService {
             double betaMkt,
             double lossPctOfValue,                // factorModelPnl / V  (negative = loss)
             Map<String, Double> appliedFactorShocks, // factors actually loaded on → shock %
-            List<String> notes
+            List<String> notes,
+            boolean policyOverlayApplied,
+            String overlayNotes
     ) {}
 
     @PostConstruct
@@ -178,11 +183,32 @@ public class StressScenarioService {
                 ? List.of("LOW_CONFIDENCE factor betas — stress estimate is indicative only")
                 : List.of();
 
+        Map<String, Double> policyShocks = macroState.getPolicyRateShocks();
+
         List<StressResult> out = new ArrayList<>();
         for (Scenario s : scenarios) {
+            Map<String, Double> mutableShocks = new HashMap<>(s.factorShocks());
+            boolean overlayApplied = false;
+            StringBuilder overlayNotesSb = new StringBuilder();
+
+            for (Map.Entry<String, Double> e : policyShocks.entrySet()) {
+                String rawFactor = e.getKey().split(":")[0];
+                if (mutableShocks.containsKey(rawFactor)) {
+                    double csv = mutableShocks.get(rawFactor);
+                    double overlay = e.getValue();
+                    double scale = e.getKey().endsWith(":HIGH_SURPRISE") ? 1.5
+                                 : e.getKey().endsWith(":LOW_SURPRISE")  ? 0.7 : 1.0;
+                    double effective = Math.min(csv + overlay * scale, 0.0);
+                    mutableShocks.put(rawFactor, effective);
+                    overlayApplied = true;
+                    overlayNotesSb.append(e.getKey()).append("=")
+                        .append(String.format("%.1f%%", effective * 100)).append(" ");
+                }
+            }
+
             double pnl = 0.0;
             Map<String, Double> applied = new LinkedHashMap<>();
-            for (Map.Entry<String, Double> e : s.factorShocks().entrySet()) {
+            for (Map.Entry<String, Double> e : mutableShocks.entrySet()) {
                 Double beta = betas.get(e.getKey());
                 if (beta == null) continue;                       // portfolio has no such exposure
                 pnl += beta * (e.getValue() / 100.0) * value;
@@ -194,7 +220,8 @@ public class StressScenarioService {
                     : betaMkt * (niftyShockPct / 100.0) * value;
 
             out.add(new StressResult(s.id(), s.label(), niftyShockPct, pnl, betaOnlyPnl,
-                    value, betaMkt, pnl / value, applied, baseNotes));
+                    value, betaMkt, pnl / value, applied, baseNotes,
+                    overlayApplied, overlayNotesSb.toString().trim()));
         }
         out.sort(Comparator.comparingDouble(StressResult::factorModelPnl)); // worst loss first
         return out;
