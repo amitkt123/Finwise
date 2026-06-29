@@ -1,40 +1,88 @@
 package org.amit.finwise.goal.service;
 
+import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
+import org.amit.finwise.goal.config.GoalMcProperties;
+import org.amit.finwise.goal.model.FinancialGoal;
+import org.amit.finwise.goal.model.GoalSimulationResult;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.Optional;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 class MonteCarloGoalServiceRegimeTest {
 
+    private GoalMcProperties props() {
+        GoalMcProperties p = new GoalMcProperties();
+        p.setPaths(1000);
+        p.setSeed(42L);
+        return p;
+    }
+
+    private FinancialGoal minimalGoal() {
+        return FinancialGoal.builder()
+                .userId("test-user")
+                .name("Retirement")
+                .type(FinancialGoal.GoalType.RETIREMENT)
+                .targetAmount(BigDecimal.valueOf(10_000_000))
+                .currentAmount(BigDecimal.valueOf(100_000))
+                .targetDate(LocalDate.now().plusYears(10))
+                .startDate(LocalDate.now())
+                .build();
+    }
+
+    /**
+     * When p_crisis=1.0, sigmaCalm=0.12, sigmaCrisis=0.30, the regime blend must produce
+     * effectiveSigma=0.30 and regimeAdjusted=true in the returned GoalSimulationResult.
+     */
     @Test
     void fullCrisisBlendUsesRegimeVol() {
-        var macroState = mock(QuantitativeMacroState.class);
+        QuantitativeMacroState macroState = mock(QuantitativeMacroState.class);
         when(macroState.getCrisisProbability()).thenReturn(1.0);
         when(macroState.getRegimeVolCalm()).thenReturn(0.12);
         when(macroState.getRegimeVolCrisis()).thenReturn(0.30);
-        when(macroState.getYieldCurve10y()).thenReturn(0.0715);
+        when(macroState.getYieldCurve10y()).thenReturn(Double.NaN); // skip yield-floor branch
 
-        double p = 1.0, calm = 0.12, crisis = 0.30;
-        double expected = (1 - p) * calm + p * crisis;  // 0.30
-        assertThat(expected).isEqualTo(0.30);
-        // When MonteCarloGoalService.simulate() is called with p_crisis=1.0,
-        // result.effectiveSigma() == 0.30 and result.regimeAdjusted() == true
+        PortfolioRiskService portfolioRiskService = mock(PortfolioRiskService.class);
+        // Return empty so simulate() falls back to defaultVol — lets the regime blend take effect
+        when(portfolioRiskService.estimateDriftVol(any())).thenReturn(Optional.empty());
+
+        MonteCarloGoalService service = new MonteCarloGoalService(portfolioRiskService, props(), macroState);
+
+        GoalSimulationResult result = service.simulate(minimalGoal(), 10_000.0);
+
+        assertThat(result.regimeAdjusted()).isTrue();
+        assertThat(result.effectiveSigma()).isEqualTo(0.30);
     }
 
+    /**
+     * When p_crisis=0.0 and both regime vols are NaN, the service must NOT apply the regime
+     * blend: regimeAdjusted stays false and effectiveSigma equals the historical vol (0.18)
+     * returned by PortfolioRiskService.
+     */
     @Test
     void zeroCrisisKeepsHistoricalVol() {
-        var macroState = mock(QuantitativeMacroState.class);
+        QuantitativeMacroState macroState = mock(QuantitativeMacroState.class);
         when(macroState.getCrisisProbability()).thenReturn(0.0);
         when(macroState.getRegimeVolCalm()).thenReturn(Double.NaN);
         when(macroState.getRegimeVolCrisis()).thenReturn(Double.NaN);
-        // Prove that naive arithmetic with NaN calm/crisis produces NaN —
-        // the service must guard with isNaN checks and fall back to historical vol.
-        double p = 0.0;
-        double naiveBlend = (1 - p) * macroState.getRegimeVolCalm()
-                + p * macroState.getRegimeVolCrisis(); // NaN arithmetic
-        // Result: effectiveSigma == historicalVol (0.18), regimeAdjusted == false
-        assertThat(Double.isNaN(naiveBlend)).isTrue(); // NaN arithmetic → fall back to historical
+        when(macroState.getYieldCurve10y()).thenReturn(Double.NaN); // skip yield-floor branch
+
+        PortfolioRiskService portfolioRiskService = mock(PortfolioRiskService.class);
+        // Provide historical vol = 0.18 so effectiveSigma is determined by portfolio history
+        when(portfolioRiskService.estimateDriftVol(any())).thenReturn(
+                Optional.of(new PortfolioRiskService.DriftVol(0.10, 0.18, 36)));
+
+        MonteCarloGoalService service = new MonteCarloGoalService(portfolioRiskService, props(), macroState);
+
+        GoalSimulationResult result = service.simulate(minimalGoal(), 5_000.0);
+
+        assertThat(result.regimeAdjusted()).isFalse();
+        assertThat(result.effectiveSigma()).isEqualTo(0.18);
     }
 }
