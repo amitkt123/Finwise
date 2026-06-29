@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.service.analytics;
 import org.amit.finwise.cfo.config.FactorProperties;
 import org.amit.finwise.cfo.model.FactorRiskReport;
 import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.apache.commons.math3.stat.regression.OLSMultipleLinearRegression;
@@ -34,6 +35,7 @@ class FactorModelServiceTest {
     @Mock ReturnSeriesService returnSeriesService;
     @Mock InvestmentRepository investmentRepository;
     @Mock SymbolExtractorService symbolExtractorService;
+    @Mock QuantitativeMacroState quantitativeMacroState;
 
     private FactorModelService service;
     private final FactorProperties props = new FactorProperties();
@@ -52,13 +54,16 @@ class FactorModelServiceTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(quantitativeMacroState.getCrisisProbability()).thenReturn(0.0);
         service = new FactorModelService(
                 returnSeriesService,
                 new FactorReturnService(returnSeriesService, props),
                 new CovarianceEngine(),
                 investmentRepository,
                 symbolExtractorService,
-                props);
+                props,
+                new KalmanBetaService(),
+                quantitativeMacroState);
     }
 
     @Test

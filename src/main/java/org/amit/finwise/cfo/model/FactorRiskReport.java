@@ -61,7 +61,9 @@ public record FactorRiskReport(
             double rSquared,
             double idioVolAnnualized,        // σ_ε·√252 from residual variance
             int observations,
-            int hacLag                       // Bartlett bandwidth L used for the HAC t-stats
+            int hacLag,                      // Bartlett bandwidth L used for the HAC t-stats
+            double kalmanBeta,               // Kalman-smoothed current beta (regime-adaptive)
+            double betaDrift                 // kalmanBeta_T - kalmanBeta_{T-60d}
     ) {
         public boolean isSignificant(String factor) {
             Double t = tStats.get(factor);

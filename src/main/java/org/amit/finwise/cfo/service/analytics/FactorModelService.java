@@ -6,6 +6,7 @@ import org.amit.finwise.cfo.config.FactorProperties;
 import org.amit.finwise.cfo.model.FactorRiskReport;
 import org.amit.finwise.cfo.model.FactorRiskReport.HoldingFactorExposure;
 import org.amit.finwise.cfo.service.ingestion.SymbolExtractorService;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.apache.commons.math3.linear.Array2DRowRealMatrix;
@@ -46,6 +47,8 @@ public class FactorModelService {
     private final InvestmentRepository investmentRepository;
     private final SymbolExtractorService symbolExtractorService;
     private final FactorProperties factorProperties;
+    private final KalmanBetaService kalmanBetaService;
+    private final QuantitativeMacroState macroState;
 
     private static final double ANNUAL_DAYS = 252.0;
     private static final double SQRT_252 = Math.sqrt(ANNUAL_DAYS);
@@ -265,17 +268,27 @@ public class FactorModelService {
                 || alignedFactors == null;
 
         List<HoldingFactorExposure> holdings = fits.stream()
-                .map(f -> new HoldingFactorExposure(
-                        f.symbol, weights.get(f.symbol), f.sector, f.sectorFactor,
-                        f.betas.get(FactorReturnService.MKT_FACTOR),
-                        f.betas.get(FactorReturnService.SIZE_FACTOR),
-                        f.sectorFactor != null ? f.betas.get(f.sectorFactor) : null,
-                        Collections.unmodifiableMap(f.tStats),
-                        f.alphaDaily * ANNUAL_DAYS,
-                        f.rSquared,
-                        Math.sqrt(f.errVarDaily) * SQRT_252,
-                        f.observations,
-                        f.hacLag))
+                .map(f -> {
+                    var kalman = kalmanBetaService.fit(f.assetRet, f.factorRet,
+                            macroState.getCrisisProbability());
+                    double olsBetaMkt = f.betas.getOrDefault(FactorReturnService.MKT_FACTOR, 0.0);
+                    double kalmanBeta = kalman.currentBeta().length > 0
+                            ? kalman.currentBeta()[0] : olsBetaMkt;
+                    double betaDrift = kalman.betaDrift();
+                    return new HoldingFactorExposure(
+                            f.symbol, weights.get(f.symbol), f.sector, f.sectorFactor,
+                            olsBetaMkt,
+                            f.betas.get(FactorReturnService.SIZE_FACTOR),
+                            f.sectorFactor != null ? f.betas.get(f.sectorFactor) : null,
+                            Collections.unmodifiableMap(f.tStats),
+                            f.alphaDaily * ANNUAL_DAYS,
+                            f.rSquared,
+                            Math.sqrt(f.errVarDaily) * SQRT_252,
+                            f.observations,
+                            f.hacLag,
+                            kalmanBeta,
+                            betaDrift);
+                })
                 .sorted(Comparator.comparingDouble(HoldingFactorExposure::weight).reversed())
                 .toList();
 
@@ -355,9 +368,13 @@ public class FactorModelService {
                 tStats.put(factorNames.get(j), se[j + 1] > 0 ? b[j + 1] / se[j + 1] : Double.NaN);
             }
 
+            double[][] factorRetT = new double[k][T];
+            for (int ti = 0; ti < T; ti++)
+                for (int j = 0; j < k; j++) factorRetT[j][ti] = x[ti][j];
+
             return new HoldingFit(symbol, sector, sectorFactor, betas, tStats,
                     b[0], ols.calculateRSquared(), ols.estimateErrorVariance(),
-                    T, lag, common.getFirst(), common.getLast());
+                    T, lag, common.getFirst(), common.getLast(), y, factorRetT);
         } catch (Exception e) {
             log.warn("[FactorModel] Regression failed for {}: {}", symbol, e.getMessage());
             return null;
@@ -460,6 +477,8 @@ public class FactorModelService {
             String symbol, String sector, String sectorFactor,
             Map<String, Double> betas, Map<String, Double> tStats,
             double alphaDaily, double rSquared, double errVarDaily,
-            int observations, int hacLag, LocalDate from, LocalDate to
+            int observations, int hacLag, LocalDate from, LocalDate to,
+            double[] assetRet,      // aligned asset returns [t]
+            double[][] factorRet    // aligned factor returns [factor][t]
     ) {}
 }

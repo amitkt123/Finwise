@@ -118,8 +118,9 @@ public class InsightCardService {
         safe(() -> portfolioRiskService.forwardRisk(userId))
                 .flatMap(this::volRegimeCard).ifPresent(cards::add);
 
-        safe(() -> factorModelService.compute(userId))
-                .flatMap(this::factorTiltCard).ifPresent(cards::add);
+        Optional<FactorRiskReport> factorReport = safe(() -> factorModelService.compute(userId));
+        factorReport.flatMap(this::factorTiltCard).ifPresent(cards::add);
+        factorReport.ifPresent(report -> cards.addAll(safeList(() -> betaDriftCards(report))));
 
         List<VarBacktestReport> reports = safeList(() -> varBacktestService.backtest(userId));
         varBacktestCard(reports, rd.orElse(null)).ifPresent(cards::add);
@@ -446,6 +447,38 @@ public class InsightCardService {
                 .caveats(caveats)
                 .rawConfidence(fr.isLowConfidence() ? 0.45 : 0.65)
                 .build());
+    }
+
+    // ── BETA_DRIFT ──────────────────────────────────────────────────────────────
+
+    /** Kalman-smoothed beta drift cards — top 3 holdings whose market beta moved >0.30 over 60d. */
+    List<InsightCard> betaDriftCards(FactorRiskReport report) {
+        List<InsightCard> out = new ArrayList<>();
+        String regimeLabel = macroState.getCrisisProbability() > 0.60 ? "crisis elevated" : "normal";
+        report.holdings().stream()
+                .filter(h -> Math.abs(h.betaDrift()) > 0.30)
+                .sorted(Comparator.comparingDouble(h -> -h.weight()))
+                .limit(3)
+                .forEach(h -> {
+                    double oldBeta = h.kalmanBeta() - h.betaDrift();
+                    String title = "%s beta drifted %.2f → %.2f over 60d (regime: %s)"
+                            .formatted(h.symbol(), oldBeta, h.kalmanBeta(), regimeLabel);
+                    out.add(InsightCard.builder("beta-drift-" + h.symbol(),
+                                    InsightCard.Category.BETA_DRIFT, InsightCard.Severity.WATCH)
+                            .title(title)
+                            .symbol(h.symbol())
+                            .computations(List.of(
+                                    new org.amit.finwise.cfo.model.Computation(
+                                            "Kalman beta (current)", String.format("%.2f", h.kalmanBeta()),
+                                            "Kalman filter, regime-adaptive Q", "daily returns", "60d drift window"),
+                                    new org.amit.finwise.cfo.model.Computation(
+                                            "Beta 60d ago (estimate)", String.format("%.2f", oldBeta),
+                                            "kalmanBeta − betaDrift", "daily returns", "60d drift window")))
+                            .caveats(List.of("Kalman beta is a smoothed estimate; single-window drift may reverse"))
+                            .rawConfidence(0.55)
+                            .build());
+                });
+        return out;
     }
 
     // ── VAR_BACKTEST ────────────────────────────────────────────────────────────
