@@ -43,8 +43,9 @@ class MacroStateRefreshJobTest {
         job.execute(dummyReturns);
 
         verify(macroState).setCrisisProbability(eq(0.72), eq("REGIME_MODEL"));
-        verify(macroState).setRegimeVolCalm(eq(0.12), eq("REGIME_MODEL"));
-        verify(macroState).setRegimeVolCrisis(eq(0.28), eq("REGIME_MODEL"));
+        // Implementation annualizes daily vols: calmDailyVol * sqrt(252)
+        verify(macroState).setRegimeVolCalm(eq(0.12 * Math.sqrt(252)), eq("REGIME_MODEL"));
+        verify(macroState).setRegimeVolCrisis(eq(0.28 * Math.sqrt(252)), eq("REGIME_MODEL"));
         // Use same arithmetic as the implementation to avoid IEEE 754 rounding surprises
         verify(macroState).setYieldCurve10y(
                 eq(BigDecimal.valueOf(7.15).doubleValue() / 100.0), eq("YIELD_CURVE"));

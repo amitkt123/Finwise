@@ -57,8 +57,9 @@ public class MacroStateRefreshJob {
             }
             regimeModelService.fit(niftyReturns).ifPresent(r -> {
                 quantitativeMacroState.setCrisisProbability(r.crisisProbability(), "REGIME_MODEL");
-                quantitativeMacroState.setRegimeVolCalm(r.calmDailyVol(), "REGIME_MODEL");
-                quantitativeMacroState.setRegimeVolCrisis(r.crisisDailyVol(), "REGIME_MODEL");
+                // RegimeModelService returns daily stddev; MonteCarloGoalService expects annual vol
+                quantitativeMacroState.setRegimeVolCalm(r.calmDailyVol() * Math.sqrt(252), "REGIME_MODEL");
+                quantitativeMacroState.setRegimeVolCrisis(r.crisisDailyVol() * Math.sqrt(252), "REGIME_MODEL");
                 log.info("[MacroRefresh] Regime updated: crisisP={}, calmVol={}, crisisVol={}",
                         String.format("%.3f", r.crisisProbability()),
                         String.format("%.4f", r.calmDailyVol()),

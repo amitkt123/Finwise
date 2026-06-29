@@ -97,6 +97,7 @@ public class MonteCarloGoalService {
 
         // ── Regime-conditional σ/μ adjustment from QuantitativeMacroState ────────
         boolean regimeAdjusted = false;
+        double historicalSigma = sigma;  // saved before regime blend for InsightCard caveat
         double effectiveSigma = sigma;
         if (macroState != null) {
             double p = macroState.getCrisisProbability();
@@ -121,8 +122,10 @@ public class MonteCarloGoalService {
         }
         sigma = effectiveSigma;
 
-        return simulateGbm(corpus0, sip, mu, sigma, (int) months, target,
-                props.getSeed(), lowConfidence, regimeAdjusted, notes);
+        final double finalMu = mu, finalSigma = sigma;
+        PathSimulator simFn = (s, sd) -> gbmFinalCorpuses(corpus0, s, finalMu, finalSigma, (int) months, sd);
+        return assembleRegime("GBM", (int) months, finalMu, finalSigma, historicalSigma,
+                lowConfidence, regimeAdjusted, sip, target, props.getSeed(), simFn, notes);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -181,6 +184,32 @@ public class MonteCarloGoalService {
                 mu, sigma, lowConfidence,
                 sip, target,
                 pSuccess,
+                quantile(finals, 0.10), quantile(finals, 0.25), quantile(finals, 0.50),
+                quantile(finals, 0.75), quantile(finals, 0.90),
+                requiredSip50, requiredSip75, requiredSip90,
+                headline, List.copyOf(notes),
+                regimeAdjusted, sigma);
+    }
+
+    /** Like {@link #assemble} but stores pre-blend {@code historicalSigma} in {@code annualVolatility}
+     *  so InsightCard caveats can show the historical vs effective vol distinctly. */
+    private GoalSimulationResult assembleRegime(String mode, int months, double mu, double sigma,
+                                                double historicalSigma, boolean lowConfidence,
+                                                boolean regimeAdjusted, double sip, double target,
+                                                long seed, PathSimulator sim, List<String> notes) {
+        double[] finals = sim.finalCorpuses(sip, seed);
+        Arrays.sort(finals);
+        double pSuccess = successFraction(finals, target);
+        double requiredSip50 = requiredSip(0.50, target, seed, sim);
+        double requiredSip75 = requiredSip(0.75, target, seed, sim);
+        double requiredSip90 = requiredSip(0.90, target, seed, sim);
+        String headline = String.format(
+                "%.0f%% chance at ₹%,.0f/mo; ₹%,.0f/mo for 90%% confidence.",
+                pSuccess * 100, sip, requiredSip90);
+        return new GoalSimulationResult(
+                mode, finals.length, months,
+                mu, historicalSigma, lowConfidence,
+                sip, target, pSuccess,
                 quantile(finals, 0.10), quantile(finals, 0.25), quantile(finals, 0.50),
                 quantile(finals, 0.75), quantile(finals, 0.90),
                 requiredSip50, requiredSip75, requiredSip90,

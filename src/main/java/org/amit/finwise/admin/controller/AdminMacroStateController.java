@@ -65,7 +65,7 @@ public class AdminMacroStateController {
     @PostMapping("/policy-signals/{id}/confirm")
     public ResponseEntity<?> confirm(@PathVariable Long id) {
         return signalRepo.findById(id).map(entry -> {
-            macroState.setRiskFreeRate(entry.getProposedValue(), "ADMIN");
+            applySignal(entry.getParameterKey(), entry.getProposedValue(), "ADMIN");
             entry.setStatus(SignalStatus.CONFIRMED);
             entry.setResolvedAt(Instant.now());
             entry.setResolvedBy("ADMIN");
@@ -79,7 +79,7 @@ public class AdminMacroStateController {
                                       @RequestBody Map<String, Double> body) {
         return signalRepo.findById(id).map(entry -> {
             double val = body.get("value");
-            macroState.setRiskFreeRate(val, "ADMIN");
+            applySignal(entry.getParameterKey(), val, "ADMIN");
             entry.setOverrideValue(val);
             entry.setStatus(SignalStatus.OVERRIDDEN);
             entry.setResolvedAt(Instant.now());
@@ -117,6 +117,14 @@ public class AdminMacroStateController {
             return ResponseEntity.ok(Map.of("status", "reloaded"));
         } catch (Exception e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    private void applySignal(String paramKey, double value, String actor) {
+        if ("riskFreeRate".equals(paramKey)) {
+            macroState.setRiskFreeRate(value, actor);
+        } else {
+            macroState.putPolicyRateShock(paramKey, value);
         }
     }
 }
