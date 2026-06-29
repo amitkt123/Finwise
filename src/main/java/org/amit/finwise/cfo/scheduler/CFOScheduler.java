@@ -14,6 +14,8 @@ import org.amit.finwise.cfo.service.ingestion.GrowwConnector;
 import org.amit.finwise.cfo.service.ingestion.NewsAggregatorService;
 import org.amit.finwise.cfo.service.llm.LlmRefinementService;
 import org.amit.finwise.cfo.model.MacroSeriesCode;
+import org.amit.finwise.cfo.model.StockPriceHistory;
+import org.amit.finwise.cfo.repository.StockPriceHistoryRepository;
 import org.amit.finwise.cfo.service.macro.MacroSeriesService;
 import org.amit.finwise.cfo.service.macro.MacroStateService;
 import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
@@ -22,6 +24,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 
 @Slf4j
@@ -45,6 +48,8 @@ public class CFOScheduler {
     private final org.amit.finwise.cfo.service.InsightEvaluationService insightEvaluationService;
     private final org.amit.finwise.cfo.config.FactorProperties factorProperties;
     private final UserRepository userRepository;
+    private final MacroStateRefreshJob macroStateRefreshJob;
+    private final StockPriceHistoryRepository stockPriceHistoryRepository;
 
     // ── Morning Pipeline ──────────────────────────────────────────────────────
 
@@ -180,6 +185,45 @@ public class CFOScheduler {
         } catch (Exception e) {
             log.error("[CFO] Post-market news fetch failed: {}", e.getMessage());
         }
+    }
+
+    /**
+     * Daily macro-state refresh at 16:15 IST (after price fetch, before post-close insight).
+     * Fits the regime HMM on NIFTY 50 daily returns, reads G-sec yield curve from config,
+     * and pulls the latest FII flow — writing all results into {@link QuantitativeMacroState}.
+     * Each sub-call is guarded independently; one failure never aborts the others.
+     */
+    @Scheduled(cron = "0 15 16 * * MON-FRI", zone = "Asia/Kolkata")
+    public void macroStateRefresh() {
+        log.info("[MacroRefresh] Starting daily macro state refresh");
+        try {
+            List<StockPriceHistory> history = stockPriceHistoryRepository
+                    .findRecentBySymbol(StockPriceService.NIFTY_SYMBOL,
+                            LocalDate.now().minusDays(252));
+            double[] returns = computeDailyReturns(history);
+            macroStateRefreshJob.execute(returns);
+        } catch (Exception e) {
+            log.error("[MacroRefresh] Failed to load NIFTY price history: {}", e.getMessage());
+            // Still attempt yield curve + FII even if price history is unavailable
+            macroStateRefreshJob.execute(new double[0]);
+        }
+    }
+
+    /** Compute simple daily returns from a list of price records (newest-first from the query). */
+    private static double[] computeDailyReturns(List<StockPriceHistory> history) {
+        if (history == null || history.size() < 2) return new double[0];
+        // Records come newest-first; reverse to get chronological order
+        int n = history.size();
+        double[] returns = new double[n - 1];
+        for (int i = 0; i < n - 1; i++) {
+            // history is newest-first: index 0 = today, index n-1 = oldest
+            BigDecimal newer = history.get(i).getClosePrice();
+            BigDecimal older = history.get(i + 1).getClosePrice();
+            if (newer != null && older != null && older.compareTo(BigDecimal.ZERO) != 0) {
+                returns[n - 2 - i] = newer.subtract(older).divide(older, 8, java.math.RoundingMode.HALF_UP).doubleValue();
+            }
+        }
+        return returns;
     }
 
     @Scheduled(cron = "0 30 16 * * MON-FRI", zone = "Asia/Kolkata")
