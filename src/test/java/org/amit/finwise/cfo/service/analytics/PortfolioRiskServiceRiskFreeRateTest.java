@@ -34,6 +34,7 @@ class PortfolioRiskServiceRiskFreeRateTest {
     @Mock ReturnSeriesService returnSeriesService;
     @Mock InvestmentRepository investmentRepository;
     @Mock QuantitativeMacroState macroState;
+    @Mock LiquidityService liquidityService;
 
     private static final String USER = "u";
     private static final int N = 70; // >= MIN_OBSERVATIONS
@@ -47,7 +48,7 @@ class PortfolioRiskServiceRiskFreeRateTest {
 
         PortfolioRiskService service = new PortfolioRiskService(
                 returnSeriesService, new CovarianceEngine(), investmentRepository,
-                riskProperties, macroState, new GarchService(riskProperties));
+                riskProperties, macroState, new GarchService(riskProperties), liquidityService);
 
         when(investmentRepository.findActiveInvestments(USER))
                 .thenReturn(List.of(inv("AAA", 60_000), inv("BBB", 40_000)));

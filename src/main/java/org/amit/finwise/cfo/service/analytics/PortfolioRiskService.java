@@ -3,6 +3,7 @@ package org.amit.finwise.cfo.service.analytics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.config.RiskProperties;
+import org.amit.finwise.cfo.model.LiquidityReport;
 import org.amit.finwise.cfo.model.RiskDecomposition;
 import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.model.VolForecast;
@@ -43,6 +44,7 @@ public class PortfolioRiskService {
     private final RiskProperties riskProperties;
     private final QuantitativeMacroState macroState;
     private final GarchService garchService;
+    private final LiquidityService liquidityService;
 
     private static final double SQRT_252 = Math.sqrt(252.0);
     private static final double ANNUAL_DAYS = 252.0;
@@ -371,6 +373,14 @@ public class PortfolioRiskService {
                 || !excluded.isEmpty()
                 || excludedWeightPct > 0.25;
 
+        double lvar95 = var95CornishFisher;
+        double lvar99 = var95CornishFisher * (2.326 / 1.645);
+        Optional<LiquidityReport> liq = liquidityService.compute(userId, var95CornishFisher);
+        if (liq.isPresent()) {
+            lvar95 = liq.get().lvar95();
+            lvar99 = liq.get().lvar95Stressed();
+        }
+
         log.info("[RiskEngine] Computed: vol={}%, beta={}, ENB={}, VaR95=₹{}, excluded={}",
                 String.format("%.1f", annualizedVol * 100),
                 String.format("%.2f", portfolioBeta),
@@ -391,6 +401,7 @@ public class PortfolioRiskService {
                 var95Parametric, var99Parametric,
                 var95CornishFisher, var99CornishFisher,
                 var95Historical, cvar95,
+                lvar95, lvar99,
                 skewness, excessKurtosis,
                 Collections.unmodifiableList(contributors),
                 diversificationRatio, enb, nameHHI, sectorHHI,

@@ -37,6 +37,8 @@ public record RiskDecomposition(
         double var99CornishFisher,
         double var95Historical,         // empirical 5th-percentile × V
         double cvar95,                  // expected shortfall beyond VaR95 × V
+        double lvar95,                  // var95CornishFisher + liquidity spread
+        double lvar99,                  // lvar95 × (2.326 / 1.645)
 
         // ── Higher moments of daily portfolio returns ───────────────────────────
         double returnSkewness,

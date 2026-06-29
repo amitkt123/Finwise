@@ -38,6 +38,7 @@ class PortfolioRiskServiceTest {
 
     @Mock ReturnSeriesService returnSeriesService;
     @Mock InvestmentRepository investmentRepository;
+    @Mock LiquidityService liquidityService;
 
     private PortfolioRiskService service;
 
@@ -52,7 +53,7 @@ class PortfolioRiskServiceTest {
         lenient().when(macroState.getRiskFreeRate()).thenReturn(riskProperties.getRiskFreeRate());
         service = new PortfolioRiskService(
                 returnSeriesService, new CovarianceEngine(), investmentRepository, riskProperties,
-                macroState, new GarchService(riskProperties));
+                macroState, new GarchService(riskProperties), liquidityService);
     }
 
     @Test
