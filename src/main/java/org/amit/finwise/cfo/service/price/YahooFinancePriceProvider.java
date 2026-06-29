@@ -58,7 +58,7 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
             "https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?range={range}d&interval=1d";
 
     private static final String UA =
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
     private static final long CRUMB_TTL_MS = 6 * 60 * 60 * 1_000L; // 6 hours
 
     private final RestClient restClient;
@@ -77,7 +77,9 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
     public YahooFinancePriceProvider() {
         this.restClient = RestClient.builder()
                 .defaultHeader("User-Agent", UA)
-                .defaultHeader("Accept", "application/json")
+                .defaultHeader("Accept", "application/json,text/plain,*/*")
+                .defaultHeader("Accept-Language", "en-US,en;q=0.9")
+                .defaultHeader("Referer", "https://finance.yahoo.com/")
                 .build();
         this.objectMapper = new ObjectMapper();
     }
@@ -91,23 +93,37 @@ public class YahooFinancePriceProvider implements PriceDataProvider {
         try {
             // Step 1: warm up session — Yahoo sets the A3 / GUCS cookies here
             sessionClient.send(
-                    HttpRequest.newBuilder().uri(URI.create("https://finance.yahoo.com/"))
-                            .header("User-Agent", UA).GET().build(),
+                    HttpRequest.newBuilder()
+                            .uri(URI.create("https://finance.yahoo.com/"))
+                            .header("User-Agent", UA)
+                            .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                            .header("Accept-Language", "en-US,en;q=0.9")
+                            .GET().build(),
                     HttpResponse.BodyHandlers.discarding());
 
-            // Step 2: fetch crumb string
-            HttpResponse<String> resp = sessionClient.send(
-                    HttpRequest.newBuilder()
-                            .uri(URI.create("https://query1.finance.yahoo.com/v1/test/getcrumb"))
-                            .header("User-Agent", UA).GET().build(),
-                    HttpResponse.BodyHandlers.ofString());
+            // Step 2: fetch crumb — query2 is more reliable; fall back to query1
+            String[] crumbUrls = {
+                "https://query2.finance.yahoo.com/v1/test/getcrumb",
+                "https://query1.finance.yahoo.com/v1/test/getcrumb"
+            };
+            for (String crumbUrl : crumbUrls) {
+                HttpResponse<String> resp = sessionClient.send(
+                        HttpRequest.newBuilder()
+                                .uri(URI.create(crumbUrl))
+                                .header("User-Agent", UA)
+                                .header("Accept", "text/plain,application/json,*/*;q=0.9")
+                                .header("Accept-Language", "en-US,en;q=0.9")
+                                .header("Referer", "https://finance.yahoo.com/")
+                                .GET().build(),
+                        HttpResponse.BodyHandlers.ofString());
 
-            if (resp.statusCode() == 200 && resp.body() != null && !resp.body().isBlank()) {
-                crumb = resp.body().trim();
-                crumbFetchedAt = System.currentTimeMillis();
-                log.info("[Yahoo] Crumb refreshed OK");
-            } else {
-                log.warn("[Yahoo] Crumb fetch returned HTTP {}", resp.statusCode());
+                if (resp.statusCode() == 200 && resp.body() != null && !resp.body().isBlank()) {
+                    crumb = resp.body().trim();
+                    crumbFetchedAt = System.currentTimeMillis();
+                    log.info("[Yahoo] Crumb refreshed OK from {}", crumbUrl);
+                    return;
+                }
+                log.warn("[Yahoo] Crumb fetch returned HTTP {} from {}", resp.statusCode(), crumbUrl);
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();

@@ -39,3 +39,20 @@ build/
 .claude
 CLAUDE.md
 SKILLS.md
+# Log files
+logs/
+
+/.superpowers
+/.moderne
+lancedb
+/postman
+/models
+/.mvn
+docs
+.mvn
+postman
+.moderne
+.superpowers
+models
+
+
