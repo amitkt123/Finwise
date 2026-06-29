@@ -38,6 +38,7 @@ import org.amit.finwise.goal.model.FinancialGoal;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
 import org.amit.finwise.investment.model.Investment;
 import org.amit.finwise.investment.repository.InvestmentRepository;
+import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.policy.service.PolicyIntelligenceService;
 import org.springframework.stereotype.Service;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -95,6 +96,7 @@ public class CFOAdvisorService {
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
     private final org.amit.finwise.cfo.service.insight.InsightNarrationService insightNarrationService;
     private final org.amit.finwise.cfo.service.insight.InsightCardRenderer insightCardRenderer;
+    private final QuantitativeMacroState quantitativeMacroState;
     private final MeterRegistry meterRegistry;
 
     // ── System Prompt ─────────────────────────────────────────────────────────
@@ -1007,6 +1009,14 @@ public class CFOAdvisorService {
                 }
                 ctx.append(" — ").append(excerpt).append("\n");
             });
+        }
+
+        Map<String, Double> overlays = quantitativeMacroState.getPolicyRateShocks();
+        if (!overlays.isEmpty()) {
+            ctx.append("[INSTRUCTION] Stress scenarios include active policy overlays — cite them when discussing tail risk: ");
+            overlays.forEach((k, v) ->
+                ctx.append(k).append("=").append(String.format("%.1f%%", v * 100)).append(" "));
+            ctx.append("\n");
         }
 
         ctx.append("\n");

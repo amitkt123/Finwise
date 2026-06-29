@@ -8,30 +8,18 @@ import org.amit.finwise.policy.model.*;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
-import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Phase 1: routes policy event cards with rate-channel signals into the
+ * Routes policy event cards from all 5 transmission channels into the
  * {@link PolicyQuantSignalQueueEntry} queue, auto-approving high-confidence
- * RBI/SEBI/MoF rate changes and queuing everything else for admin review.
+ * signals from trusted authorities and queuing everything else for admin review.
  */
 @Service
 @Slf4j
 public class PolicyQuantSignalService {
 
-    // Channels that carry direct interest-rate information
-    private static final Set<PolicyTransmissionChannel> RATE_WHITELIST = Set.of(
-            PolicyTransmissionChannel.DISCOUNT_RATE,
-            PolicyTransmissionChannel.CREDIT_COST
-    );
-
     private static final double AUTO_APPROVE_THRESHOLD = 0.75;
-
-    // Matches "6.50%", "6.5 per cent", "6 per cent" etc.
-    private static final Pattern RATE_PATTERN =
-            Pattern.compile("(\\d+\\.?\\d*)\\s*(?:%|per\\s*cent)", Pattern.CASE_INSENSITIVE);
 
     private final PolicyQuantSignalRepository repo;
     private final QuantitativeMacroState macroState;
@@ -44,34 +32,26 @@ public class PolicyQuantSignalService {
 
     /**
      * Process a batch of {@link PolicyEventCard}s from a policy intelligence run.
-     * <ul>
-     *   <li>Cards from trusted authorities (RBI, SEBI, MoF) on the DISCOUNT_RATE / CREDIT_COST
-     *       channel with an extractable rate value are auto-approved when confidence ≥ 0.75.</li>
-     *   <li>All other cards (untrusted authority, non-rate channel, or no extractable value)
-     *       are persisted as PENDING for admin review.</li>
-     * </ul>
+     * Trusted-authority cards across all 5 channels are extracted for quant signals;
+     * high-confidence extractions are auto-approved, the rest queued as PENDING.
      */
     public void process(List<PolicyEventCard> cards) {
         for (PolicyEventCard card : cards) {
             boolean trustedAuthority = isTrustedAuthority(card);
-            boolean rateChannel = RATE_WHITELIST.contains(card.transmissionChannel());
 
-            double extractedValue = Double.NaN;
-            if (trustedAuthority && rateChannel) {
-                extractedValue = extractRateValue(card);
-            }
-
+            SignalExtraction signal = trustedAuthority ? extractSignal(card) : null;
+            double extractedValue = signal != null ? signal.value() : Double.NaN;
             double confidence = computeConfidence(card, extractedValue);
-            SignalStatus status;
-            if (!Double.isNaN(extractedValue) && confidence >= AUTO_APPROVE_THRESHOLD) {
-                status = SignalStatus.AUTO_APPROVE;
-            } else {
-                status = SignalStatus.PENDING;
-            }
+
+            SignalStatus status = (signal != null && confidence >= AUTO_APPROVE_THRESHOLD)
+                    ? SignalStatus.AUTO_APPROVE
+                    : SignalStatus.PENDING;
+
+            String paramKey = signal != null ? signal.paramKey() : "riskFreeRate";
 
             PolicyQuantSignalQueueEntry entry = PolicyQuantSignalQueueEntry.builder()
                     .sourceEventCardId(card.impactId())
-                    .parameterKey("riskFreeRate")
+                    .parameterKey(paramKey)
                     .proposedValue(Double.isNaN(extractedValue) ? 0.0 : extractedValue)
                     .currentValue(macroState.getRiskFreeRate())
                     .confidence(confidence)
@@ -80,9 +60,15 @@ public class PolicyQuantSignalService {
             repo.save(entry);
 
             if (status == SignalStatus.AUTO_APPROVE) {
-                macroState.setRiskFreeRate(extractedValue, "AUTO");
-                log.info("[PolicyQuant] Auto-approved riskFreeRate={} confidence={} source={}",
-                        extractedValue, confidence, card.authority());
+                if ("riskFreeRate".equals(paramKey)) {
+                    macroState.setRiskFreeRate(extractedValue, "AUTO");
+                    log.info("[PolicyQuant] Auto-approved riskFreeRate={} confidence={} source={}",
+                            extractedValue, confidence, card.authority());
+                } else {
+                    macroState.putPolicyRateShock(paramKey, extractedValue);
+                    log.info("[PolicyQuant] Auto-approved shock key={} value={} confidence={} source={}",
+                            paramKey, extractedValue, confidence, card.authority());
+                }
             } else {
                 log.debug("[PolicyQuant] Queued PENDING signal authority={} channel={} confidence={}",
                         card.authority(), card.transmissionChannel(), confidence);
@@ -94,27 +80,69 @@ public class PolicyQuantSignalService {
     // Private helpers
     // -----------------------------------------------------------------------
 
+    private record SignalExtraction(String paramKey, double value) {}
+
+    private SignalExtraction extractSignal(PolicyEventCard card) {
+        String surprise = normalizeSurprise(card.surpriseClassification());
+        return switch (card.transmissionChannel()) {
+            case DISCOUNT_RATE, CREDIT_COST -> {
+                double v = extractPctFromText(card.documentTitle());
+                yield Double.isNaN(v) ? null : new SignalExtraction("riskFreeRate", v / 100.0);
+            }
+            case SECTOR_MARGIN -> {
+                double v = extractPctFromText(card.documentTitle());
+                yield Double.isNaN(v) ? null
+                        : new SignalExtraction("SIZE:" + surprise, -v / 100.0);
+            }
+            case LIQUIDITY_RULE -> {
+                double v = extractBpsFromText(card.documentTitle());
+                yield Double.isNaN(v) ? null
+                        : new SignalExtraction("BANKING:" + surprise, -(v / 10000.0) * 15.0);
+            }
+            case FISCAL_STIMULUS -> {
+                double v = extractPctFromText(card.documentTitle());
+                yield Double.isNaN(v) ? null
+                        : new SignalExtraction("MKT:" + surprise, v / 100.0 * 0.3);
+            }
+            case FII_REGULATORY -> {
+                boolean outflow = card.documentTitle() != null && (
+                        card.documentTitle().toLowerCase().contains("restrict")
+                        || card.documentTitle().toLowerCase().contains("curb"));
+                yield new SignalExtraction("FII_FLOW:" + surprise, outflow ? -0.021 : 0.015);
+            }
+            default -> null;
+        };
+    }
+
+    /** Maps PolicySurpriseClassification to the HIGH_SURPRISE / LOW_SURPRISE strings
+     *  consumed by StressScenarioService for scaling. */
+    private String normalizeSurprise(PolicySurpriseClassification s) {
+        if (s == null) return "";
+        return switch (s) {
+            case HAWKISH_SURPRISE, STRICTER_THAN_EXPECTED -> "HIGH_SURPRISE";
+            case DOVISH_SURPRISE, EASIER_THAN_EXPECTED -> "LOW_SURPRISE";
+            default -> s.name();
+        };
+    }
+
+    private double extractPctFromText(String text) {
+        if (text == null) return Double.NaN;
+        var m = Pattern.compile("(\\d+\\.?\\d*)\\s*(?:%|per\\s*cent)", Pattern.CASE_INSENSITIVE)
+                .matcher(text);
+        return m.find() ? Double.parseDouble(m.group(1)) : Double.NaN;
+    }
+
+    private double extractBpsFromText(String text) {
+        if (text == null) return Double.NaN;
+        var m = Pattern.compile("(\\d+)\\s*bps").matcher(text.toLowerCase());
+        return m.find() ? Double.parseDouble(m.group(1)) : Double.NaN;
+    }
+
     private boolean isTrustedAuthority(PolicyEventCard card) {
         return card.authority() == PolicyAuthority.RBI
                 || card.authority() == PolicyAuthority.SEBI
                 || card.authority() == PolicyAuthority.MINISTRY_OF_FINANCE
                 || card.authority() == PolicyAuthority.CBDT;
-    }
-
-    /**
-     * Phase 1: rate channel only. Extracts percentage values like "6.50%" or
-     * "6.5 per cent" from the card's document title.
-     */
-    private double extractRateValue(PolicyEventCard card) {
-        String text = card.documentTitle() != null ? card.documentTitle() : "";
-        Matcher m = RATE_PATTERN.matcher(text);
-        if (m.find()) {
-            double pct = Double.parseDouble(m.group(1));
-            if (pct > 1.0 && pct < 20.0) {
-                return pct / 100.0;
-            }
-        }
-        return Double.NaN;
     }
 
     private double computeConfidence(PolicyEventCard card, double extractedValue) {

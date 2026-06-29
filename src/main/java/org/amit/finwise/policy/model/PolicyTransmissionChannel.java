@@ -10,5 +10,9 @@ public enum PolicyTransmissionChannel {
     RISK_PREMIUM_REGIME,
     COMPLIANCE_COST,
     MARKET_STRUCTURE,
+    SECTOR_MARGIN,
+    LIQUIDITY_RULE,
+    FISCAL_STIMULUS,
+    FII_REGULATORY,
     OTHER
 }
