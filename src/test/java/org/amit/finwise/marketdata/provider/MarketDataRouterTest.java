@@ -39,4 +39,29 @@ class MarketDataRouterTest {
         MarketDataRouter router = new MarketDataRouter(List.of(unhealthy), CircuitBreakerRegistry.ofDefaults());
         assertThat(router.healthyProvider(DataCapability.MACRO_GLOBAL)).isEmpty();
     }
+
+    @Test
+    void isHealthy_reflectsCircuitBreakerState() {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        MarketDataRouter router = new MarketDataRouter(List.of(), registry);
+
+        assertThat(router.isHealthy("closedProvider")).isTrue();
+
+        registry.circuitBreaker("openProvider").transitionToOpenState();
+        assertThat(router.isHealthy("openProvider")).isFalse();
+    }
+
+    @Test
+    void healthyProvider_skipsAdapterWithOpenCircuitBreaker() {
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        MarketDataProvider tripped = new MarketDataProvider() {
+            public String name() { return "tripped"; }
+            public boolean supports(DataCapability c) { return true; }
+            public boolean isHealthy() { return true; }
+        };
+        MarketDataRouter router = new MarketDataRouter(List.of(tripped), registry);
+        registry.circuitBreaker("tripped").transitionToOpenState();
+
+        assertThat(router.healthyProvider(DataCapability.MACRO_GLOBAL)).isEmpty();
+    }
 }
