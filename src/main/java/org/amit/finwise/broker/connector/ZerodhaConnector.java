@@ -12,6 +12,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
@@ -20,6 +21,7 @@ import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -57,17 +59,45 @@ public class ZerodhaConnector implements BrokerConnector {
         form.add("request_token", requestToken);
         form.add("checksum", checksum);
 
-        Map<?, ?> response = restClientBuilder.build()
-            .post()
-            .uri(KITE_BASE + "/session/token")
-            .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-            .body(form)
-            .retrieve()
-            .body(Map.class);
+        Map<?, ?> response;
+        try {
+            response = restClientBuilder.build()
+                .post()
+                .uri(KITE_BASE + "/session/token")
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(form)
+                .retrieve()
+                .body(Map.class);
+        } catch (HttpClientErrorException e) {
+            log.error("Zerodha token exchange HTTP error: {}", e.getMessage());
+            throw new IllegalStateException("Zerodha token exchange failed: " + e.getMessage(), e);
+        } catch (Exception e) {
+            log.error("Zerodha token exchange failed: {}", e.getMessage());
+            throw new IllegalStateException("Zerodha token exchange failed", e);
+        }
+
+        if (response == null) {
+            throw new IllegalStateException("Zerodha token exchange returned an empty response");
+        }
+
+        // Kite returns {"status":"error","message":...} (no "data" key) for routine
+        // failures like an invalid/expired request token or bad checksum.
+        if ("error".equalsIgnoreCase(String.valueOf(response.get("status")))) {
+            String message = String.valueOf(response.get("message"));
+            log.error("Zerodha token exchange returned error: {}", message);
+            throw new IllegalStateException("Zerodha token exchange failed: " + message);
+        }
 
         @SuppressWarnings("unchecked")
-        Map<String, Object> data = (Map<String, Object>) ((Map<?, ?>) response).get("data");
+        Map<String, Object> data = (Map<String, Object>) response.get("data");
+        if (data == null) {
+            throw new IllegalStateException("Zerodha token exchange returned no data: " + response);
+        }
+
         String accessToken = (String) data.get("access_token");
+        if (accessToken == null) {
+            throw new IllegalStateException("Zerodha did not return an access_token");
+        }
 
         return BrokerConnection.builder()
             .userId(userId)
@@ -80,27 +110,66 @@ public class ZerodhaConnector implements BrokerConnector {
 
     @Override
     public List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken) {
-        Map<?, ?> response = restClientBuilder.build()
-            .get()
-            .uri(KITE_BASE + "/portfolio/holdings")
-            .header("Authorization", "token " + apiKey + ":" + decryptedAccessToken)
-            .retrieve()
-            .body(Map.class);
+        Map<?, ?> response;
+        try {
+            response = restClientBuilder.build()
+                .get()
+                .uri(KITE_BASE + "/portfolio/holdings")
+                .header("Authorization", "token " + apiKey + ":" + decryptedAccessToken)
+                .retrieve()
+                .body(Map.class);
+        } catch (HttpClientErrorException.Unauthorized e) {
+            log.error("Zerodha access token expired/invalid. Re-auth required.");
+            throw new IllegalStateException("Zerodha token invalid. Please refresh it.", e);
+        } catch (Exception e) {
+            log.error("Failed to sync Zerodha holdings: {}", e.getMessage());
+            throw new RuntimeException("Zerodha holdings sync failed", e);
+        }
+
+        if (response == null) {
+            log.warn("Zerodha holdings API returned empty response");
+            return List.of();
+        }
+
+        if ("error".equalsIgnoreCase(String.valueOf(response.get("status")))) {
+            log.warn("Zerodha holdings API returned error status: {}", response.get("message"));
+            return List.of();
+        }
 
         @SuppressWarnings("unchecked")
-        List<Map<String, Object>> data = (List<Map<String, Object>>) ((Map<?, ?>) response).get("data");
+        List<Map<String, Object>> data = (List<Map<String, Object>>) response.get("data");
         if (data == null) return List.of();
 
-        return data.stream().map(h -> new BrokerHoldingDTO(
-            (String) h.get("isin"),
-            (String) h.get("tradingsymbol"),
-            (String) h.getOrDefault("instrument_name", (String) h.get("tradingsymbol")),
-            BrokerEnum.ZERODHA,
-            new BigDecimal(h.get("quantity").toString()),
-            new BigDecimal(h.get("average_price").toString()),
-            new BigDecimal(h.get("last_price").toString())
-                .multiply(new BigDecimal(h.get("quantity").toString()))
-        )).toList();
+        List<BrokerHoldingDTO> holdings = new ArrayList<>();
+        for (Map<String, Object> h : data) {
+            Object isin = h.get("isin");
+            Object tradingsymbol = h.get("tradingsymbol");
+            Object quantity = h.get("quantity");
+            Object avgPrice = h.get("average_price");
+            Object lastPrice = h.get("last_price");
+
+            if (isin == null || tradingsymbol == null || quantity == null
+                    || avgPrice == null || lastPrice == null) {
+                log.warn("Skipping malformed Zerodha holding (missing required field): {}", h);
+                continue;
+            }
+
+            try {
+                BigDecimal qty = new BigDecimal(quantity.toString());
+                holdings.add(new BrokerHoldingDTO(
+                    (String) isin,
+                    (String) tradingsymbol,
+                    (String) h.getOrDefault("instrument_name", (String) tradingsymbol),
+                    BrokerEnum.ZERODHA,
+                    qty,
+                    new BigDecimal(avgPrice.toString()),
+                    new BigDecimal(lastPrice.toString()).multiply(qty)
+                ));
+            } catch (Exception e) {
+                log.warn("Skipping malformed Zerodha holding (unparseable numeric field): {} — {}", h, e.getMessage());
+            }
+        }
+        return holdings;
     }
 
     @Override
