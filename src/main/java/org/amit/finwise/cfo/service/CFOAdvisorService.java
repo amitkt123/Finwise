@@ -96,6 +96,7 @@ public class CFOAdvisorService {
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
     private final org.amit.finwise.cfo.service.insight.InsightNarrationService insightNarrationService;
     private final org.amit.finwise.cfo.service.insight.InsightCardRenderer insightCardRenderer;
+    private final org.amit.finwise.cfo.service.insight.BriefHonestyValidator briefHonestyValidator;
     private final QuantitativeMacroState quantitativeMacroState;
     private final MeterRegistry meterRegistry;
 
@@ -211,7 +212,7 @@ public class CFOAdvisorService {
                 """.formatted(today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
 
         String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
-        content = appendInsightCardSection(content, userId);
+        content = finalizeBrief(content, context, userId, true);
 
         AiInsight insight = AiInsight.builder()
                 .userId(userId)
@@ -255,6 +256,7 @@ public class CFOAdvisorService {
                 """.formatted(today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
 
         String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
+        content = finalizeBrief(content, context, userId, false);
 
         AiInsight insight = AiInsight.builder()
                 .userId(userId)
@@ -308,7 +310,7 @@ public class CFOAdvisorService {
                 """.formatted(label, today.format(DateTimeFormatter.ofPattern("dd MMM yyyy")), context);
 
         String content = llmProvider.chat(CFO_SYSTEM_PROMPT, userPrompt);
-        content = appendInsightCardSection(content, userId);
+        content = finalizeBrief(content, context, userId, true);
 
         AiInsight insight = AiInsight.builder()
                 .userId(userId)
@@ -355,6 +357,32 @@ public class CFOAdvisorService {
         } catch (Exception e) {
             log.warn("[CFO] Insight-card section failed, brief left unchanged: {}", e.getMessage());
             return content;
+        }
+    }
+
+    /**
+     * Finalize a free-form brief: enforce numeric honesty on the LLM prose, then append the
+     * Java-computed card section, then the redaction footer at the very end.
+     *
+     * <p>The lead prose is the one part of a brief whose numbers were not Java-authored, so
+     * {@link BriefHonestyValidator} strips any prose figure absent from {@code context} (the exact
+     * authoritative text the model was given) before it ever reaches the user. The card section is
+     * appended <em>after</em> sanitisation — it is Java-rendered and already number-guarded, so it is
+     * never filtered. Defensive: any failure leaves the (card-appended) brief unchanged.
+     *
+     * @param withCards whether to append the insight-card section (daily/market briefs do; the
+     *                  after-hours review historically does not)
+     */
+    private String finalizeBrief(String content, String context, String userId, boolean withCards) {
+        try {
+            org.amit.finwise.cfo.service.insight.BriefHonestyValidator.Result r =
+                    briefHonestyValidator.sanitize(content, context);
+            String out = r.sanitizedBrief();
+            if (withCards) out = appendInsightCardSection(out, userId);
+            return out + org.amit.finwise.cfo.service.insight.BriefHonestyValidator.redactionFooter(r.redactions());
+        } catch (Exception e) {
+            log.warn("[CFO] Brief honesty filter failed, falling back to raw brief: {}", e.getMessage());
+            return withCards ? appendInsightCardSection(content, userId) : content;
         }
     }
 
