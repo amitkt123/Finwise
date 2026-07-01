@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Map;
 
@@ -57,11 +58,33 @@ public class ZerodhaQuoteAdapter implements MarketFeedProvider {
             // number. Until a source that actually carries 52-week range is
             // wired in, we report these as null (not computed) rather than a
             // fabricated/incorrect value.
+            // NOTE: Kite Connect's /quote response has no top-level "change" field
+            // carrying a percentage — that key does not exist in the real payload.
+            // It only carries "net_change" (absolute point change vs. previous
+            // close) and an "ohlc" object whose "close" is the *previous* day's
+            // close (not today's). We derive changePct ourselves from
+            // (last_price - ohlc.close) / ohlc.close * 100. If ohlc/ohlc.close is
+            // missing or zero (divide-by-zero), we report null rather than a
+            // fabricated "0" that would misleadingly read as "no movement today".
+            BigDecimal lastPrice = new BigDecimal(q.get("last_price").toString());
+            BigDecimal changePct = null;
+            @SuppressWarnings("unchecked")
+            Map<String, Object> ohlc = (Map<String, Object>) q.get("ohlc");
+            if (ohlc != null && ohlc.get("close") != null) {
+                BigDecimal previousClose = new BigDecimal(ohlc.get("close").toString());
+                if (previousClose.compareTo(BigDecimal.ZERO) != 0) {
+                    changePct = lastPrice.subtract(previousClose)
+                        .divide(previousClose, 4, RoundingMode.HALF_UP)
+                        .multiply(BigDecimal.valueOf(100))
+                        .setScale(2, RoundingMode.HALF_UP);
+                }
+            }
+
             LiveQuote quote = new LiveQuote(
                 symbol,
-                new BigDecimal(q.get("last_price").toString()),
+                lastPrice,
                 new BigDecimal(q.getOrDefault("net_change", "0").toString()),
-                new BigDecimal(q.getOrDefault("change", "0").toString()),
+                changePct,
                 new BigDecimal(q.getOrDefault("volume", "0").toString()),
                 null,
                 null,
