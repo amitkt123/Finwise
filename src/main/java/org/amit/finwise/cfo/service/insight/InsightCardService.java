@@ -77,6 +77,7 @@ public class InsightCardService {
     private final LookThroughService lookThroughService;
     private final StockIntelligenceService stockIntelligenceService;
     private final QuantitativeMacroState macroState;
+    private final HardTruthEngine hardTruthEngine;
 
     /** %RC at/above which trimming a single contributor becomes an ACTION rather than WATCH. */
     private static final double CONCENTRATED_RC = 0.25;
@@ -138,6 +139,8 @@ public class InsightCardService {
         cards.addAll(safeList(() -> goalFundingCards(userId)));
 
         lookThroughCard(safeGet(() -> lookThroughService.compute(userId).orElse(null))).ifPresent(cards::add);
+
+        cards.addAll(safeList(() -> hardTruthEngine.generateCards(userId)));
 
         cards.sort(Comparator.comparingInt((InsightCard c) -> c.severity().ordinal()).reversed());
         Set<String> dismissed = dismissedRepo.findByUserId(userId).stream()

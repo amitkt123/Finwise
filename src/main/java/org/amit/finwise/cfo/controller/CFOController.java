@@ -54,6 +54,9 @@ public class CFOController {
     private final LookThroughService lookThroughService;
     private final AttributionService attributionService;
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
+    private final org.amit.finwise.cfo.service.fiduciary.FiduciaryWrapper fiduciaryWrapper;
+    private final org.amit.finwise.cfo.service.insight.ConfidenceCalibrationService confidenceCalibrationService;
+    private final org.amit.finwise.cfo.service.fiduciary.AuditTrailService auditTrailService;
 
     // ── Daily Brief ────────────────────────────────────────────────────────────
 
@@ -183,9 +186,24 @@ public class CFOController {
     }
 
     @GetMapping("/insight-cards")
-    public ResponseEntity<java.util.List<org.amit.finwise.cfo.model.InsightCard>> getInsightCards(
+    public ResponseEntity<org.amit.finwise.cfo.service.fiduciary.FiduciaryEnvelope<java.util.List<org.amit.finwise.cfo.model.InsightCard>>> getInsightCards(
             @AuthenticationPrincipal UserDetails principal) {
-        return ResponseEntity.ok(insightCardService.generate(principal.getUsername()));
+        String userId = principal.getUsername();
+        java.util.List<org.amit.finwise.cfo.model.InsightCard> cards = insightCardService.generate(userId);
+        return ResponseEntity.ok(fiduciaryWrapper.wrap(
+                cards,
+                List.of("NSE-bhavcopy", "AMFI", "Yahoo-Finance"),
+                "EOD prices; portfolio valued at last close",
+                buildConfidenceSummary()
+        ));
+    }
+
+    private String buildConfidenceSummary() {
+        try {
+            return confidenceCalibrationService.trackRecord(null, null);
+        } catch (Exception e) {
+            return "calibration unavailable";
+        }
     }
 
     @GetMapping("/insight-cards/marginal-add")
@@ -195,6 +213,17 @@ public class CFOController {
         return insightCardService.marginalAddCard(principal.getUsername(), symbol)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/audit")
+    public ResponseEntity<org.amit.finwise.cfo.service.fiduciary.FiduciaryEnvelope<List<RecommendationAudit>>> auditTrail(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestParam(defaultValue = "90") int days) {
+        String userId = principal.getUsername();
+        java.time.LocalDateTime from = java.time.LocalDateTime.now().minusDays(days);
+        List<RecommendationAudit> trail = auditTrailService.findByUser(userId, from);
+        return ResponseEntity.ok(fiduciaryWrapper.wrap(trail, List.of(), null,
+                trail.size() + " recommendations in last " + days + " days"));
     }
 
     // ── News ──────────────────────────────────────────────────────────────────
