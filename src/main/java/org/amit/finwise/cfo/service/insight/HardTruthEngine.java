@@ -58,12 +58,19 @@ public class HardTruthEngine {
      */
     public List<InsightCard> generateCards(String userId) {
         List<InsightCard> cards = new ArrayList<>();
-        List<Investment> holdings = investmentRepository.findActiveInvestments(userId);
 
         try {
             benchmarkHuggerCard(userId).ifPresent(cards::add);
         } catch (RuntimeException e) {
             log.debug("[HardTruth] benchmarkHuggerCard failed: {}", e.getMessage());
+        }
+
+        List<Investment> holdings;
+        try {
+            holdings = investmentRepository.findActiveInvestments(userId);
+        } catch (RuntimeException e) {
+            log.debug("[HardTruth] findActiveInvestments failed: {}", e.getMessage());
+            holdings = List.of();
         }
 
         try {
