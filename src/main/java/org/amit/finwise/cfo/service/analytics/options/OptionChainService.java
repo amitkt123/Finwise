@@ -208,12 +208,21 @@ public class OptionChainService {
         return term;
     }
 
-    /** Average of CE/PE implied vol when both are real; whichever side is present otherwise. */
+    /**
+     * Average of CE/PE implied vol when both are real; whichever side is present otherwise.
+     * A side's IV of {@code 0} is NSE's "no trade this session" placeholder, not a real vol —
+     * excluded here (not just at the aggregate level) so one untraded side never drags a real
+     * reading on the other side down by half.
+     */
     private Double atmIv(Map<?, ?> row) {
-        Double ce = extractIv(row.get("CE"));
-        Double pe = extractIv(row.get("PE"));
+        Double ce = positiveOrNull(extractIv(row.get("CE")));
+        Double pe = positiveOrNull(extractIv(row.get("PE")));
         if (ce != null && pe != null) return (ce + pe) / 2.0;
         return ce != null ? ce : pe;
+    }
+
+    private Double positiveOrNull(Double v) {
+        return (v != null && v > 0) ? v : null;
     }
 
     private Double extractIv(Object sideObj) {

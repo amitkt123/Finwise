@@ -153,4 +153,22 @@ class OptionChainServiceTest {
 
         assertTrue(chain.detectTermStructureInversion("NIFTY").isEmpty());
     }
+
+    @Test
+    void detectTermStructureInversion_ignoresZeroIvSideRatherThanAveragingIt() {
+        // CE untraded this session (NSE reports 0, not a real vol) — must not drag the real
+        // PE=24.0 down to a fabricated 12.0 average.
+        Map<String, Object> nearAtm = optionRow(1000, "30-Jan-2026", 0.0, 24.0);
+        Map<String, Object> farAtm = optionRow(1000, "27-Feb-2026", 15.0, 15.0);
+        Map<String, Object> chainMap = nseChain(1000.0, List.of(nearAtm, farAtm));
+
+        when(adapter.fetchOptionChain("NIFTY"))
+                .thenReturn(DataEnvelope.of(chainMap, "nse-option-chain", DataQuality.LIVE));
+
+        Optional<IvTermStructureAlert> alert = chain.detectTermStructureInversion("NIFTY");
+        assertTrue(alert.isPresent());
+        assertEquals(24.0, alert.get().nearTermIvPct(), 1e-9,
+                "near IV must be the real PE side (24.0), not a 0/24 average (12.0)");
+        assertEquals(15.0, alert.get().farTermIvPct(), 1e-9);
+    }
 }
