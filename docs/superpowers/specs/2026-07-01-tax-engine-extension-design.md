@@ -47,11 +47,11 @@ Current `Regime` enum: `EQUITY | SLAB | EXCLUDED`. Extended to five values — i
 | `EQUITY` | STOCK, ETF, equity MF | Unchanged |
 | `DEBT_SLAB` | Debt MF | Unchanged (renamed from `SLAB` for clarity) — still a capital gain, taxed at slab rate |
 | `INTEREST_INCOME` *(new)* | FIXED_DEPOSIT, POST_OFFICE_SCHEME, BOND (coupon) | Annual interest taxed at slab rate as "Income from Other Sources" — never nets against capital losses |
-| `INDEXED_CHOICE` *(new)* | GOLD, BOND (on sale), COMMODITY | 24-month LT threshold (not 12). Pre-23-Jul-2024 acquisitions get computed both ways (12.5% no indexation vs 20% with CII indexation) and the lower-tax option is reported |
+| `NON_EQUITY_FLAT` *(new)* | GOLD, BOND (on sale), COMMODITY | 24-month LT threshold (not 12). LTCG is a flat, admin-configurable rate with **no indexation** — the indexation-choice carve-out from the August 2024 Finance Act amendment applies only to land/building (REAL_ESTATE), not movable assets, and REAL_ESTATE is deferred to a later spec. STCG (≤24 months) taxed at slab rate |
 | `EXEMPT` *(new)* | PPF (always); INSURANCE_POLICY (if premium/sum-assured ratio within threshold); GOLD matching a Sovereign-Gold-Bond name pattern held to 8-year maturity | Zero tax, still shown in the report (not silently dropped) |
 | `EXCLUDED` | CRYPTOCURRENCY, REAL_ESTATE, OTHER | Unchanged — deferred |
 
-**SGB detection** mirrors the existing `DEBT_FUND_NAME` regex pattern used for MF classification: a new `SGB_NAME` pattern (`sovereign gold bond|sgb`) checked against `Investment.name` before falling through to general `GOLD` indexed-choice treatment.
+**SGB detection** mirrors the existing `DEBT_FUND_NAME` regex pattern used for MF classification: a new `SGB_NAME` pattern (`sovereign gold bond|sgb`) checked against `Investment.name` before falling through to general `GOLD` flat-rate treatment.
 
 ---
 
@@ -62,14 +62,16 @@ Current `Regime` enum: `EQUITY | SLAB | EXCLUDED`. Extended to five values — i
 
 TDS: banks deduct 10% once interest from the same payer crosses ₹40,000/₹50,000 per FY. Best-effort group-by on the existing `platform` field (proxy for "same bank/institution"); reported as **informational only** in `notes` since interest paid outside Finwise-tracked accounts isn't visible.
 
-### 5.2 Indexed-choice capital assets (GOLD/BOND/COMMODITY on sale)
-Requires a Cost Inflation Index (CII) lookup by financial year. New `CostInflationIndexService`, backed by a properties/YAML file (one `FY → CII` entry per line), **not hardcoded in Java** — this table must be updated whenever CBDT notifies the new year's CII (same operational pattern as the existing `@Value`-externalized tax rates). The service raises a startup warning (not a hard failure) if the current FY's entry is missing, so a stale table fails loud rather than silently mis-taxing. The initial checked-in file ships with a placeholder for the current FY that must be populated with the real CBDT-published value before this goes live — it is **not** to be guessed at implementation time.
+### 5.2 Non-equity flat-rate capital assets (GOLD/BOND/COMMODITY on sale)
 
-For each holding, compute both:
-- No-indexation: `(saleValue - cost) × 12.5%`
-- With indexation: `(saleValue - cost × CII_sale/CII_purchase) × 20%`
+**Correction from the original spec draft:** the August 2024 Finance Act amendment's indexation-choice carve-out (12.5% without indexation OR 20% with indexation) applies **only to land/building (REAL_ESTATE)**, not to movable/financial assets. Since REAL_ESTATE is deferred to a later spec, this spec needs **no Cost Inflation Index lookup and no dual computation at all** for GOLD, BOND, or COMMODITY — this is materially simpler than the original draft.
 
-...and report the lower of the two (taxpayer's legal right to choose), following the same pattern as the existing grandfathering logic. Only applies to acquisitions before 23-Jul-2024; later acquisitions get no-indexation-only at 12.5%.
+- **LT threshold:** 24 months (not 12).
+- **LTCG (>24 months):** flat rate on `(saleValue - cost)`, no indexation. Rate is **admin-configurable** via `cfo.tax.non-equity-ltcg-rate` (default `0.125`), following the exact pattern of the existing `cfo.tax.ltcg-rate` property — so the rate can be updated without a code change if the law changes again.
+- **STCG (≤24 months):** taxed at the existing configurable slab rate (`cfo.tax.slab-rate`), same as debt MF.
+- The 24-month threshold itself is also admin-configurable via `cfo.tax.non-equity-lt-months` (default `24`), for the same reason.
+
+No new service, no properties/YAML table, no startup-warning mechanism needed for this section — those were entirely a byproduct of the incorrect indexation-choice assumption and are removed from scope.
 
 ### 5.3 Insurance (Section 10(10D) test)
 `ratio = annualPremium / sumAssured`. Threshold: 10% if `purchaseDate >= 2012-04-01`, else 20% (pre-2012 grandfathered rule — same date-threshold pattern as existing grandfathering).
@@ -86,7 +88,7 @@ Always `EXEMPT`. Zero computation. Included in the report (not dropped) so the e
 
 `TaxEstimate` gains:
 - `interestIncomeGains`, `interestIncomeTax`
-- `indexedChoiceGains`, `indexedChoiceTaxNoIndexation`, `indexedChoiceTaxWithIndexation` (both reported, plus which was selected)
+- `nonEquityFlatGains`, `nonEquityFlatTax` (covers GOLD/BOND/COMMODITY, both LT and ST buckets)
 - `exemptAmount` (informational, zero tax)
 
 `RealizedTaxSummary` gains the equivalent fields for the realized-gains path.
@@ -105,21 +107,20 @@ Follows the existing convention exactly: missing data never throws. It degrades 
 
 New/extended test coverage in `CapitalGainsTaxServiceTest` (split into a separate test class if it grows unwieldy):
 
-- 24-month LT boundary for indexed-choice assets (23 vs 24 vs 25 months held)
-- Indexation-vs-no-indexation selects the genuinely lower tax in both directions (test a case where each wins)
+- 24-month LT boundary for non-equity flat-rate assets (23 vs 24 vs 25 months held)
+- Non-equity LTCG uses the configurable flat rate correctly (no indexation applied anywhere)
 - Insurance threshold boundary — exactly at 10%/20%, just above, just below
 - SGB name-detection heuristic (positive and negative matches)
 - PPF full exemption
 - Interest-income computation with a missing `interestRate` degrading gracefully (holding still shown, tax excluded, note present)
 - Mixed-portfolio integration test asserting the five regimes never cross-contaminate — specifically, an `INTEREST_INCOME` holding must never be netted against a capital loss from any other regime
-- CII table missing current-FY entry triggers the startup warning path (not a crash)
 
 ---
 
 ## 9. Out of Scope / Deferred
 
 - CRYPTOCURRENCY (flat 30%, Section 115BBH, no loss offset whatsoever) — separate spec
-- REAL_ESTATE (Section 54/54EC reinvestment exemptions, TDS 194-IA) — separate spec
+- REAL_ESTATE (Section 54/54EC reinvestment exemptions, TDS 194-IA) — separate spec. This is also where the genuine indexation-choice mechanism (12.5% no-indexation vs 20%-with-CII-indexation, pre-23-Jul-2024 acquisitions) belongs, since that carve-out is real-estate-specific under the August 2024 amendment
 - Exact bank-compounding interest schedules (quarterly/monthly) — simple annual accrual only
 - ULIP-specific Section 112A capital-gains treatment — simplified to slab rate with a disclosure note
 - Cross-account TDS aggregation (interest earned at institutions outside Finwise-tracked platforms is invisible to this system)
