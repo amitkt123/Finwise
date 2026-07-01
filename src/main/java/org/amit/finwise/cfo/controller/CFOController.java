@@ -56,6 +56,7 @@ public class CFOController {
     private final org.amit.finwise.cfo.service.insight.InsightCardService insightCardService;
     private final org.amit.finwise.cfo.service.fiduciary.FiduciaryWrapper fiduciaryWrapper;
     private final org.amit.finwise.cfo.service.insight.ConfidenceCalibrationService confidenceCalibrationService;
+    private final org.amit.finwise.cfo.service.fiduciary.AuditTrailService auditTrailService;
 
     // ── Daily Brief ────────────────────────────────────────────────────────────
 
@@ -212,6 +213,17 @@ public class CFOController {
         return insightCardService.marginalAddCard(principal.getUsername(), symbol)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @GetMapping("/audit")
+    public ResponseEntity<org.amit.finwise.cfo.service.fiduciary.FiduciaryEnvelope<List<RecommendationAudit>>> auditTrail(
+            @AuthenticationPrincipal UserDetails principal,
+            @RequestParam(defaultValue = "90") int days) {
+        String userId = principal.getUsername();
+        java.time.LocalDateTime from = java.time.LocalDateTime.now().minusDays(days);
+        List<RecommendationAudit> trail = auditTrailService.findByUser(userId, from);
+        return ResponseEntity.ok(fiduciaryWrapper.wrap(trail, List.of(), null,
+                trail.size() + " recommendations in last " + days + " days"));
     }
 
     // ── News ──────────────────────────────────────────────────────────────────
