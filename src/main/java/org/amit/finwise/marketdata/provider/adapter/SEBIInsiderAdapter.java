@@ -49,8 +49,8 @@ public class SEBIInsiderAdapter implements MarketFeedProvider {
                 (String) t.getOrDefault("acqName", ""),
                 (String) t.getOrDefault("personCategory", ""),
                 (String) t.getOrDefault("tdpTransactionType", ""),
-                new BigDecimal(t.getOrDefault("noOfShareAcq", "0").toString()),
-                new BigDecimal(t.getOrDefault("acqPriceTo", "0").toString()),
+                t.get("noOfShareAcq") != null ? new BigDecimal(t.get("noOfShareAcq").toString()) : null,
+                t.get("acqPriceTo") != null ? new BigDecimal(t.get("acqPriceTo").toString()) : null,
                 parseDate((String) t.getOrDefault("date", ""))
             )).toList();
 
