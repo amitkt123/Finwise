@@ -31,7 +31,7 @@ public record InsightCard(
 ) {
     public enum Category {
         RISK_BUDGET, CONCENTRATION, VOL_REGIME, FACTOR_TILT, SKILL,
-        ATTRIBUTION, TAX, GOAL, LOOKTHROUGH, MARGINAL_ADD, VAR_BACKTEST, STRESS, BETA_DRIFT
+        ATTRIBUTION, TAX, GOAL, LOOKTHROUGH, MARGINAL_ADD, VAR_BACKTEST, STRESS, BETA_DRIFT, COST
     }
 
     /** INFO < WATCH < ACTION < ALERT — cards render highest-severity first. */

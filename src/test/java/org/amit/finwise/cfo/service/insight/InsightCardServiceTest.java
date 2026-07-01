@@ -56,6 +56,7 @@ class InsightCardServiceTest {
     @Mock StockIntelligenceService stockIntelligenceService;
     @Mock DismissedInsightCardRepository dismissedRepo;
     @Mock QuantitativeMacroState macroState;
+    @Mock HardTruthEngine hardTruthEngine;
 
     private InsightCardService service() {
         // No scored calls by default → cards keep their raw confidence (Phase C no-ops cleanly).
@@ -73,7 +74,8 @@ class InsightCardServiceTest {
                 varBacktestService, stressScenarioService, calibrationService,
                 dismissedRepo, liquidityService, new TradingCostService(), performanceService,
                 attributionService, taxHarvestingService, monteCarloGoalService,
-                goalRepository, lookThroughService, stockIntelligenceService, macroState);
+                goalRepository, lookThroughService, stockIntelligenceService, macroState,
+                hardTruthEngine);
     }
 
     @Test
