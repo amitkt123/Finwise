@@ -11,24 +11,24 @@ import java.util.Optional;
 @Component
 public class MarketDataRouter {
 
-    private final List<MarketDataProvider> providers;
+    private final List<MarketFeedProvider> providers;
     private final CircuitBreakerRegistry cbRegistry;
 
-    public MarketDataRouter(List<MarketDataProvider> providers, CircuitBreakerRegistry cbRegistry) {
+    public MarketDataRouter(List<MarketFeedProvider> providers, CircuitBreakerRegistry cbRegistry) {
         this.providers = providers;
         this.cbRegistry = cbRegistry;
     }
 
-    public Optional<MarketDataProvider> healthyProvider(DataCapability capability) {
+    public Optional<MarketFeedProvider> healthyProvider(DataCapability capability) {
         return providers.stream()
             .filter(p -> p.supports(capability))
-            .filter(MarketDataProvider::isHealthy)
+            .filter(MarketFeedProvider::isHealthy)
             .filter(p -> cbRegistry.circuitBreaker(p.name()).getState()
                 != io.github.resilience4j.circuitbreaker.CircuitBreaker.State.OPEN)
             .findFirst();
     }
 
-    public <T> DataEnvelope<T> route(DataCapability capability, java.util.function.Function<MarketDataProvider, DataEnvelope<T>> fetcher) {
+    public <T> DataEnvelope<T> route(DataCapability capability, java.util.function.Function<MarketFeedProvider, DataEnvelope<T>> fetcher) {
         return healthyProvider(capability)
             .map(p -> {
                 try {

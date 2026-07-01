@@ -12,13 +12,13 @@ class MarketDataRouterTest {
 
     @Test
     void healthyProvider_returnsFirstSupportingAdapter() {
-        MarketDataProvider fred = new MarketDataProvider() {
+        MarketFeedProvider fred = new MarketFeedProvider() {
             public String name() { return "fred"; }
             public boolean supports(DataCapability c) { return c == DataCapability.MACRO_GLOBAL; }
             public boolean isHealthy() { return true; }
         };
         MarketDataRouter router = new MarketDataRouter(List.of(fred), CircuitBreakerRegistry.ofDefaults());
-        Optional<MarketDataProvider> found = router.healthyProvider(DataCapability.MACRO_GLOBAL);
+        Optional<MarketFeedProvider> found = router.healthyProvider(DataCapability.MACRO_GLOBAL);
         assertThat(found).isPresent();
         assertThat(found.get().name()).isEqualTo("fred");
     }
@@ -31,7 +31,7 @@ class MarketDataRouterTest {
 
     @Test
     void healthyProvider_skipsUnhealthyAdapter() {
-        MarketDataProvider unhealthy = new MarketDataProvider() {
+        MarketFeedProvider unhealthy = new MarketFeedProvider() {
             public String name() { return "broken"; }
             public boolean supports(DataCapability c) { return true; }
             public boolean isHealthy() { return false; }
@@ -54,7 +54,7 @@ class MarketDataRouterTest {
     @Test
     void healthyProvider_skipsAdapterWithOpenCircuitBreaker() {
         CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
-        MarketDataProvider tripped = new MarketDataProvider() {
+        MarketFeedProvider tripped = new MarketFeedProvider() {
             public String name() { return "tripped"; }
             public boolean supports(DataCapability c) { return true; }
             public boolean isHealthy() { return true; }
