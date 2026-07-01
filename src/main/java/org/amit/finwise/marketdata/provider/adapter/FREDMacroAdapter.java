@@ -29,13 +29,19 @@ public class FREDMacroAdapter implements MarketFeedProvider {
 
     public DataEnvelope<GlobalMacroSnapshot> fetchGlobalMacro() {
         try {
-            BigDecimal fed = fetchSeries("FEDFUNDS");
-            BigDecimal dxy = fetchSeries("DTWEXBGS");
-            BigDecimal crude = fetchSeries("DCOILWTICO");
-            BigDecimal gold = fetchSeries("GOLDAMGBD228NLBM");
-            BigDecimal vix = fetchSeries("VIXCLS");
-            BigDecimal us10y = fetchSeries("DGS10");
-            GlobalMacroSnapshot snap = new GlobalMacroSnapshot(fed, dxy, crude, gold, vix, us10y, "latest");
+            FredObservation fed = fetchSeries("FEDFUNDS");
+            FredObservation dxy = fetchSeries("DTWEXBGS");
+            FredObservation crude = fetchSeries("DCOILWTICO");
+            FredObservation gold = fetchSeries("GOLDAMGBD228NLBM");
+            FredObservation vix = fetchSeries("VIXCLS");
+            FredObservation us10y = fetchSeries("DGS10");
+            String dataDate = List.of(fed, dxy, crude, gold, vix, us10y).stream()
+                .filter(o -> o != null && o.date() != null)
+                .map(FredObservation::date)
+                .findFirst()
+                .orElse("unknown");
+            GlobalMacroSnapshot snap = new GlobalMacroSnapshot(
+                value(fed), value(dxy), value(crude), value(gold), value(vix), value(us10y), dataDate);
             return DataEnvelope.of(snap, name(), DataQuality.EOD);
         } catch (Exception e) {
             log.error("[FRED] fetch failed: {}", e.getMessage());
@@ -43,7 +49,13 @@ public class FREDMacroAdapter implements MarketFeedProvider {
         }
     }
 
-    private BigDecimal fetchSeries(String seriesId) {
+    private static BigDecimal value(FredObservation obs) {
+        return obs == null ? null : obs.value();
+    }
+
+    private record FredObservation(String date, BigDecimal value) {}
+
+    private FredObservation fetchSeries(String seriesId) {
         Map<?, ?> response = restClientBuilder.build()
             .get()
             .uri(uriBuilder -> uriBuilder
@@ -61,7 +73,9 @@ public class FREDMacroAdapter implements MarketFeedProvider {
         @SuppressWarnings("unchecked")
         List<Map<String, String>> observations = (List<Map<String, String>>) response.get("observations");
         if (observations == null || observations.isEmpty()) return null;
+        String date = observations.get(0).get("date");
         String value = observations.get(0).get("value");
-        return ".".equals(value) ? null : new BigDecimal(value);
+        BigDecimal parsedValue = ".".equals(value) ? null : new BigDecimal(value);
+        return new FredObservation(date, parsedValue);
     }
 }
