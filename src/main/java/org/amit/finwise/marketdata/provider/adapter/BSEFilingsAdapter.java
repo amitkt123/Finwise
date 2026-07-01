@@ -42,7 +42,12 @@ public class BSEFilingsAdapter implements MarketFeedProvider {
             if (data == null || data.isEmpty()) return DataEnvelope.missing(name(), "No data for " + bseScripCode);
 
             // Aggregate by category
-            BigDecimal promoterPct = BigDecimal.ZERO, promoterPledgedPct = BigDecimal.ZERO;
+            BigDecimal promoterPct = BigDecimal.ZERO;
+            // shpAPI's Table rows only carry Shareholder_Category / Shareholding_Percentage — no
+            // promoter-pledge field is present in this response. Pledge % would need to come from a
+            // separate BSE pledge-disclosure endpoint, not yet integrated, so we report null (not
+            // computed) rather than a fabricated zero.
+            BigDecimal promoterPledgedPct = null;
             BigDecimal fiiPct = BigDecimal.ZERO, diiPct = BigDecimal.ZERO, retailPct = BigDecimal.ZERO;
             String quarterEnd = "";
 
