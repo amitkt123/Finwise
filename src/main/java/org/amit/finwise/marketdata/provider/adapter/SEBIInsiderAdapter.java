@@ -63,6 +63,6 @@ public class SEBIInsiderAdapter implements MarketFeedProvider {
 
     private LocalDate parseDate(String raw) {
         try { return LocalDate.parse(raw.substring(0, 10)); }
-        catch (Exception e) { return LocalDate.now(); }
+        catch (Exception e) { return null; }
     }
 }
