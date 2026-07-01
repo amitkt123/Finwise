@@ -10,7 +10,7 @@ import java.util.List;
 
 public interface BrokerConnector {
     BrokerEnum broker();
-    List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken);
+    List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken, String brokerClientId);
     List<BrokerTransactionDTO> syncTransactions(String decryptedAccessToken, LocalDate since);
     BrokerConnection refreshToken(BrokerConnection connection);
 }

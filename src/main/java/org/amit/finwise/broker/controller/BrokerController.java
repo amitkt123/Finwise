@@ -10,6 +10,7 @@ import org.amit.finwise.broker.model.BrokerEnum;
 import org.amit.finwise.broker.model.ConnectionStatus;
 import org.amit.finwise.broker.repository.BrokerConnectionRepository;
 import org.amit.finwise.broker.service.BrokerSyncService;
+import org.amit.finwise.common.TokenEncryptionService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,6 +26,7 @@ public class BrokerController {
     private final BrokerConnectionRepository connectionRepo;
     private final ZerodhaConnector zerodhaConnector;
     private final UpstoxConnector upstoxConnector;
+    private final TokenEncryptionService tokenEncryptionService;
 
     @GetMapping("/status")
     public List<BrokerStatusDTO> status() {
@@ -69,9 +71,23 @@ public class BrokerController {
         String userId = CurrentUserProvider.userId();
         BrokerConnection conn = BrokerConnection.builder()
             .userId(userId).broker(BrokerEnum.DHAN)
-            .encryptedAccessToken(accessToken) // encrypted by caller or encrypt here
+            .encryptedAccessToken(tokenEncryptionService.encrypt(accessToken))
             .status(ConnectionStatus.ACTIVE).build();
         connectionRepo.findByUserIdAndBroker(userId, BrokerEnum.DHAN)
+            .ifPresent(connectionRepo::delete);
+        connectionRepo.save(conn);
+        return ResponseEntity.ok(Map.of("status", "connected"));
+    }
+
+    @PostMapping("/angel/connect")
+    public ResponseEntity<Map<String, String>> angelConnect(@RequestParam String jwtToken, @RequestParam String clientCode) {
+        String userId = CurrentUserProvider.userId();
+        BrokerConnection conn = BrokerConnection.builder()
+            .userId(userId).broker(BrokerEnum.ANGEL)
+            .encryptedAccessToken(tokenEncryptionService.encrypt(jwtToken))
+            .brokerClientId(clientCode)
+            .status(ConnectionStatus.ACTIVE).build();
+        connectionRepo.findByUserIdAndBroker(userId, BrokerEnum.ANGEL)
             .ifPresent(connectionRepo::delete);
         connectionRepo.save(conn);
         return ResponseEntity.ok(Map.of("status", "connected"));

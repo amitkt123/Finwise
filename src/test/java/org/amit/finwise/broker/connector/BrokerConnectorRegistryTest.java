@@ -18,7 +18,7 @@ class BrokerConnectorRegistryTest {
     void get_returnsRegisteredConnector() {
         BrokerConnector stub = new BrokerConnector() {
             public BrokerEnum broker() { return BrokerEnum.DHAN; }
-            public List<BrokerHoldingDTO> syncHoldings(String t) { return List.of(); }
+            public List<BrokerHoldingDTO> syncHoldings(String t, String c) { return List.of(); }
             public List<BrokerTransactionDTO> syncTransactions(String t, LocalDate d) { return List.of(); }
             public BrokerConnection refreshToken(BrokerConnection c) { return c; }
         };

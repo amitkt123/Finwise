@@ -33,14 +33,14 @@ public class AngelConnector implements BrokerConnector {
     public BrokerEnum broker() { return BrokerEnum.ANGEL; }
 
     @Override
-    public List<BrokerHoldingDTO> syncHoldings(String decryptedJwtToken) {
+    public List<BrokerHoldingDTO> syncHoldings(String decryptedJwtToken, String brokerClientId) {
         Map<?, ?> response;
         try {
             response = restClientBuilder.build()
                 .get()
                 .uri(ANGEL_BASE + "/portfolio/v1/getHolding")
                 .header("Authorization", "Bearer " + decryptedJwtToken)
-                .header("X-ClientCode", "")  // populated from user's Angel client code
+                .header("X-ClientCode", brokerClientId == null ? "" : brokerClientId)
                 .header("X-PrivateKey", apiKey)
                 .retrieve()
                 .body(Map.class);

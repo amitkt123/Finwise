@@ -45,7 +45,7 @@ class BrokerSyncServiceTest {
         when(registry.get(BrokerEnum.DHAN)).thenReturn(mockConnector);
         BrokerHoldingDTO holding = new BrokerHoldingDTO("INE002A01018", "RELIANCE", "Reliance",
             BrokerEnum.DHAN, new BigDecimal("5"), new BigDecimal("2500"), new BigDecimal("13500"));
-        when(mockConnector.syncHoldings("plain-token")).thenReturn(List.of(holding));
+        when(mockConnector.syncHoldings("plain-token", null)).thenReturn(List.of(holding));
 
         MergedHoldingDTO merged = new MergedHoldingDTO("INE002A01018", "RELIANCE", "Reliance",
             new BigDecimal("5"), new BigDecimal("2500"), new BigDecimal("13500"), java.util.Map.of());
@@ -78,8 +78,8 @@ class BrokerSyncServiceTest {
             BrokerEnum.ZERODHA, new BigDecimal("5"), new BigDecimal("2500"), new BigDecimal("13500"));
         BrokerHoldingDTO dhanHolding = new BrokerHoldingDTO("INE467B01029", "TCS", "Tata Consultancy Services",
             BrokerEnum.DHAN, new BigDecimal("2"), new BigDecimal("3400"), new BigDecimal("7200"));
-        when(zerodhaConnector.syncHoldings("plain-token-z")).thenReturn(List.of(zerodhaHolding));
-        when(dhanConnector.syncHoldings("plain-token-d")).thenReturn(List.of(dhanHolding));
+        when(zerodhaConnector.syncHoldings("plain-token-z", null)).thenReturn(List.of(zerodhaHolding));
+        when(dhanConnector.syncHoldings("plain-token-d", null)).thenReturn(List.of(dhanHolding));
 
         when(dedup.merge(any())).thenReturn(List.of());
 
@@ -112,10 +112,10 @@ class BrokerSyncServiceTest {
         when(registry.get(BrokerEnum.ZERODHA)).thenReturn(zerodhaConnector);
         when(registry.get(BrokerEnum.DHAN)).thenReturn(dhanConnector);
 
-        when(zerodhaConnector.syncHoldings("plain-token-z")).thenThrow(new RuntimeException("Zerodha API down"));
+        when(zerodhaConnector.syncHoldings("plain-token-z", null)).thenThrow(new RuntimeException("Zerodha API down"));
         BrokerHoldingDTO dhanHolding = new BrokerHoldingDTO("INE467B01029", "TCS", "Tata Consultancy Services",
             BrokerEnum.DHAN, new BigDecimal("2"), new BigDecimal("3400"), new BigDecimal("7200"));
-        when(dhanConnector.syncHoldings("plain-token-d")).thenReturn(List.of(dhanHolding));
+        when(dhanConnector.syncHoldings("plain-token-d", null)).thenReturn(List.of(dhanHolding));
 
         when(dedup.merge(any())).thenReturn(List.of());
 

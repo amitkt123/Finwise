@@ -34,6 +34,9 @@ public class BrokerConnection {
     @Column(columnDefinition = "TEXT")
     private String encryptedRefreshToken;
 
+    /** Broker-issued account/client identifier some APIs require alongside the token (e.g. Angel One's client code). Not a secret. */
+    private String brokerClientId;
+
     private Instant tokenExpiresAt;
 
     @Enumerated(EnumType.STRING)

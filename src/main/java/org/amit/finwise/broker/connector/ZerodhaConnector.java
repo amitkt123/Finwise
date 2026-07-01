@@ -109,7 +109,7 @@ public class ZerodhaConnector implements BrokerConnector {
     }
 
     @Override
-    public List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken) {
+    public List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken, String brokerClientId) {
         Map<?, ?> response;
         try {
             response = restClientBuilder.build()
@@ -123,7 +123,7 @@ public class ZerodhaConnector implements BrokerConnector {
             throw new IllegalStateException("Zerodha token invalid. Please refresh it.", e);
         } catch (Exception e) {
             log.error("Failed to sync Zerodha holdings: {}", e.getMessage());
-            throw new RuntimeException("Zerodha holdings sync failed", e);
+            throw new IllegalStateException("Zerodha holdings sync failed", e);
         }
 
         if (response == null) {

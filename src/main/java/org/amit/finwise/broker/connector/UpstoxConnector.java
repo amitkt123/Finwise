@@ -100,7 +100,7 @@ public class UpstoxConnector implements BrokerConnector {
     }
 
     @Override
-    public List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken) {
+    public List<BrokerHoldingDTO> syncHoldings(String decryptedAccessToken, String brokerClientId) {
         Map<?, ?> response;
         try {
             response = restClientBuilder.build()

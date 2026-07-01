@@ -32,7 +32,7 @@ public class BrokerSyncService {
         for (BrokerConnection conn : active) {
             try {
                 String token = tokenEncryptionService.decrypt(conn.getEncryptedAccessToken());
-                List<BrokerHoldingDTO> holdings = registry.get(conn.getBroker()).syncHoldings(token);
+                List<BrokerHoldingDTO> holdings = registry.get(conn.getBroker()).syncHoldings(token, conn.getBrokerClientId());
                 allHoldings.addAll(holdings);
                 conn.setLastSyncedAt(Instant.now());
                 connectionRepo.save(conn);
