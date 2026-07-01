@@ -13,6 +13,7 @@ import org.amit.finwise.cfo.service.analytics.PortfolioRiskService;
 import org.amit.finwise.cfo.service.analytics.StressScenarioService;
 import org.amit.finwise.cfo.service.analytics.TradingCostService;
 import org.amit.finwise.cfo.service.analytics.VarBacktestService;
+import org.amit.finwise.cfo.service.fiduciary.AuditTrailService;
 import org.amit.finwise.cfo.service.macro.QuantitativeMacroState;
 import org.amit.finwise.cfo.service.research.StockIntelligenceService;
 import org.amit.finwise.goal.repository.FinancialGoalRepository;
@@ -30,7 +31,11 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -57,6 +62,7 @@ class InsightCardServiceTest {
     @Mock DismissedInsightCardRepository dismissedRepo;
     @Mock QuantitativeMacroState macroState;
     @Mock HardTruthEngine hardTruthEngine;
+    @Mock AuditTrailService auditTrailService;
 
     private InsightCardService service() {
         // No scored calls by default → cards keep their raw confidence (Phase C no-ops cleanly).
@@ -75,7 +81,7 @@ class InsightCardServiceTest {
                 dismissedRepo, liquidityService, new TradingCostService(), performanceService,
                 attributionService, taxHarvestingService, monteCarloGoalService,
                 goalRepository, lookThroughService, stockIntelligenceService, macroState,
-                hardTruthEngine);
+                hardTruthEngine, auditTrailService);
     }
 
     @Test
@@ -131,6 +137,40 @@ class InsightCardServiceTest {
 
         assertEquals(InsightCard.Severity.INFO, riskBudget.severity());
         assertNull(riskBudget.actionVerb());
+    }
+
+    @Test
+    void actionCardIsRecordedToAuditTrail() {
+        RiskContributor top = new RiskContributor("HDFCBANK", 0.30, 1.16, 0.0152, 0.0046, 0.42);
+        RiskDecomposition rd = riskDecomposition(List.of(top));
+
+        when(portfolioRiskService.compute("u")).thenReturn(Optional.of(rd));
+        lenient().when(portfolioRiskService.forwardRisk("u")).thenReturn(Optional.empty());
+        lenient().when(factorModelService.compute("u")).thenReturn(Optional.empty());
+        lenient().when(varBacktestService.backtest("u")).thenReturn(List.of());
+
+        InsightCard riskBudget = service().generate("u").stream()
+                .filter(c -> c.category() == InsightCard.Category.RISK_BUDGET)
+                .findFirst().orElseThrow();
+
+        verify(auditTrailService).record(
+                eq("u"), eq(InsightCard.Category.RISK_BUDGET.name()), eq("HDFCBANK"),
+                eq(riskBudget.title()), eq(riskBudget.effectiveConfidence()), anyList());
+    }
+
+    @Test
+    void infoCardIsNotRecordedToAuditTrail() {
+        RiskContributor small = new RiskContributor("ITC", 0.05, 0.7, 0.001, 0.0001, 0.08);
+        RiskDecomposition rd = riskDecomposition(List.of(small));
+
+        when(portfolioRiskService.compute("u")).thenReturn(Optional.of(rd));
+        lenient().when(portfolioRiskService.forwardRisk("u")).thenReturn(Optional.empty());
+        lenient().when(factorModelService.compute("u")).thenReturn(Optional.empty());
+        lenient().when(varBacktestService.backtest("u")).thenReturn(List.of());
+
+        service().generate("u");
+
+        verify(auditTrailService, never()).record(any(), any(), any(), any(), any(), any());
     }
 
     @Test

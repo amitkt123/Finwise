@@ -14,6 +14,7 @@ import org.amit.finwise.cfo.model.VarBacktestReport;
 import org.amit.finwise.cfo.model.VolForecast;
 import org.amit.finwise.cfo.repository.DismissedInsightCardRepository;
 import org.amit.finwise.cfo.service.InsightEvaluationService.CalibrationRow;
+import org.amit.finwise.cfo.service.fiduciary.AuditTrailService;
 import org.amit.finwise.cfo.service.analytics.AttributionService;
 import org.amit.finwise.cfo.service.analytics.FactorModelService;
 import org.amit.finwise.cfo.service.analytics.LiquidityService;
@@ -78,6 +79,10 @@ public class InsightCardService {
     private final StockIntelligenceService stockIntelligenceService;
     private final QuantitativeMacroState macroState;
     private final HardTruthEngine hardTruthEngine;
+    private final AuditTrailService auditTrailService;
+
+    /** Provenance stamped on every audited recommendation (Honesty-Compliance Task 2). */
+    private static final List<String> AUDIT_DATA_SOURCES = List.of("NSE-bhavcopy", "AMFI", "Yahoo-Finance");
 
     /** %RC at/above which trimming a single contributor becomes an ACTION rather than WATCH. */
     private static final double CONCENTRATED_RC = 0.25;
@@ -146,9 +151,30 @@ public class InsightCardService {
         Set<String> dismissed = dismissedRepo.findByUserId(userId).stream()
                 .map(org.amit.finwise.cfo.model.DismissedInsightCard::getCardId)
                 .collect(Collectors.toSet());
-        return calibrate(cards).stream()
+        List<InsightCard> served = calibrate(cards).stream()
                 .filter(c -> !dismissed.contains(c.id()))
                 .toList();
+        auditRecommendations(userId, served);
+        return served;
+    }
+
+    /**
+     * Immutable fiduciary record of every recommendation actually served (Honesty-Compliance
+     * Task 2). Only ACTION/ALERT cards are audited — INFO/WATCH cards are context, not a
+     * recommendation the user is expected to act on. An audit-write failure is logged and
+     * swallowed, matching every other generator here: one failing source never blocks the brief.
+     */
+    private void auditRecommendations(String userId, List<InsightCard> served) {
+        served.stream()
+                .filter(c -> c.severity() == InsightCard.Severity.ACTION || c.severity() == InsightCard.Severity.ALERT)
+                .forEach(c -> {
+                    try {
+                        auditTrailService.record(userId, c.category().name(), c.symbol(),
+                                c.title(), c.effectiveConfidence(), AUDIT_DATA_SOURCES);
+                    } catch (RuntimeException e) {
+                        log.warn("[InsightCards] audit write failed for card {}: {}", c.id(), e.getMessage());
+                    }
+                });
     }
 
     /**
