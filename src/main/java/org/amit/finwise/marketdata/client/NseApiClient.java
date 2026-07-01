@@ -71,6 +71,26 @@ public class NseApiClient {
                 "/companies-listing/corporate-filings-event-calendar");
     }
 
+    /** Forward-looking NSE event calendar filtered to one symbol. */
+    public Optional<String> fetchEventCalendar(String symbol) {
+        return getJson(BASE + "/api/event-calendar?symbol=" + symbol,
+                "/companies-listing/corporate-filings-event-calendar");
+    }
+
+    /** Live option chain (equities) for one symbol. */
+    public Optional<String> fetchOptionChain(String symbol) {
+        return getJson(BASE + "/api/option-chain-equities?symbol=" + symbol,
+                "/get-quotes/derivatives?symbol=" + symbol);
+    }
+
+    /** SEBI insider-trading (PIT) disclosures for one symbol over an [from, to] date range. */
+    public Optional<String> fetchInsiderTrades(String symbol, LocalDate from, LocalDate to) {
+        String url = BASE + "/api/corporates-pit?symbol=" + symbol
+                + "&from=" + DD_MM_YYYY.format(from)
+                + "&to=" + DD_MM_YYYY.format(to);
+        return getJson(url, "/companies-listing/corporate-filings-insider-trading");
+    }
+
     /** Corporate-announcements JSON for an [from, to] date range (equities). */
     public Optional<String> fetchAnnouncements(LocalDate from, LocalDate to) {
         String url = BASE + "/api/corporate-announcements?index=equities"
