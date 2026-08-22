@@ -436,6 +436,55 @@ class CapitalGainsTaxServiceTest {
         assertEquals(0.0, s.taxableLtcg().doubleValue(), 1e-9, "must not enter equity netting");
     }
 
+    // ── Mixed-portfolio integration: regimes must not cross-contaminate ──────
+
+    @Test
+    void mixedPortfolio_allFiveRegimesComputeIndependently() {
+        Investment stock = Investment.builder()
+                .userId(USER).type(InvestmentType.STOCK).symbol("TCS").name("TCS")
+                .purchaseDate(LocalDate.now().minusMonths(6))
+                .unrealizedGainLoss(BigDecimal.valueOf(10_000))
+                .build();
+        Investment debtMf = Investment.builder()
+                .userId(USER).type(InvestmentType.MUTUAL_FUND).name("ABC Corporate Bond Fund")
+                .purchaseDate(LocalDate.now().minusYears(3))
+                .unrealizedGainLoss(BigDecimal.valueOf(5_000))
+                .build();
+        Investment fd = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("SBI FD")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(200_000))
+                .interestRate(BigDecimal.valueOf(6.5))
+                .build();
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .unrealizedGainLoss(BigDecimal.valueOf(20_000))
+                .build();
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .currentValue(BigDecimal.valueOf(300_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est =
+                service.estimate(List.of(stock, debtMf, fd, gold, ppf));
+
+        assertEquals(10_000.0, est.stcgGains().doubleValue(), 1e-9, "equity STCG untouched by other regimes");
+        assertEquals(5_000.0, est.slabGains().doubleValue(), 1e-9, "debt MF slab gain untouched");
+        assertEquals(13_000.0, est.interestIncomeGains().doubleValue(), 1e-9, "200,000 × 6.5%");
+        assertEquals(20_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9, "gold gain untouched");
+        assertEquals(300_000.0, est.exemptAmount().doubleValue(), 1e-9, "PPF fully exempt");
+
+        // Total tax must be the simple sum of each regime's own tax — no cross-netting.
+        double expectedTotal = 2_000.0            // 10,000 × 20% equity STCG
+                + 1_500.0                          // 5,000 × 30% slab
+                + (13_000.0 * 0.30)                // interest income × slab
+                + 2_500.0;                         // 20,000 × 12.5% non-equity flat LTCG
+        assertEquals(expectedTotal, est.totalTaxIfSoldToday().doubleValue(), 1e-6);
+        assertTrue(est.exclusions().isEmpty());
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private static Investment legacy(String symbol, double cost, double current, double qty) {
