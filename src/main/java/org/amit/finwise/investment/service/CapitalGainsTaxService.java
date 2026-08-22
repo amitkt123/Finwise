@@ -11,8 +11,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -60,6 +62,8 @@ public class CapitalGainsTaxService {
             + "banking (&|and) psu|floater|floating rate|treasury|fmp|fixed maturity",
             Pattern.CASE_INSENSITIVE);
 
+    private static final double TDS_THRESHOLD = 40_000;
+
     public CapitalGainsTaxService(
             StockPriceService stockPriceService,
             LotTrackingService lotTrackingService,
@@ -87,9 +91,11 @@ public class CapitalGainsTaxService {
         double ltcgGains = 0;
         double slabGains = 0;
         double exemptAmount = 0;
+        double interestIncomeGains = 0;
+        Map<String, Double> interestByPlatform = new HashMap<>();
 
         for (Investment inv : activeInvestments) {
-            String label = inv.getSymbol() != null ? inv.getSymbol() : String.valueOf(inv.getType());
+            String label = inv.getSymbol() != null ? inv.getSymbol() : inv.getName();
             Regime regime = regimeOf(inv, notes);
 
             if (regime == Regime.EXCLUDED) {
@@ -107,6 +113,25 @@ public class CapitalGainsTaxService {
                 exemptAmount += value.doubleValue();
                 holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "EXEMPT",
                         zeroIfNull(inv.getUnrealizedGainLoss())));
+                continue;
+            }
+
+            if (regime == Regime.INTEREST_INCOME) {
+                if (inv.getInterestRate() == null) {
+                    notes.add("INTEREST_RATE_MISSING: " + label
+                            + " — no interestRate on record, excluded from interest-income estimate");
+                    exclusions.add(label);
+                    continue;
+                }
+                double principal = inv.getCostPerUnit().multiply(inv.getQuantity()).doubleValue();
+                double annualInterest = principal * inv.getInterestRate().doubleValue() / 100.0;
+                interestIncomeGains += annualInterest;
+                String payer = inv.getPlatform() != null ? inv.getPlatform() : "UNKNOWN";
+                interestByPlatform.merge(payer, annualInterest, Double::sum);
+                notes.add("INTEREST_SIMPLE_ANNUAL_ASSUMED: " + label
+                        + " — simple annual accrual at " + inv.getInterestRate() + "%, not compounded");
+                holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "INTEREST_INCOME",
+                        rupees(annualInterest)));
                 continue;
             }
 
@@ -133,17 +158,27 @@ public class CapitalGainsTaxService {
                     inv.getUnrealizedGainLoss()));
         }
 
+        for (Map.Entry<String, Double> e : interestByPlatform.entrySet()) {
+            if (e.getValue() > TDS_THRESHOLD) {
+                notes.add(String.format(
+                        "TDS_LIKELY: interest from %s (₹%.0f) exceeds the ₹40,000 TDS threshold — "
+                        + "the payer likely deducted 10%% TDS; verify against Form 26AS",
+                        e.getKey(), e.getValue()));
+            }
+        }
+
         double stcgTax = stcgGains * stcgRate;
         double ltcgTax = Math.max(0, ltcgGains - ltcgExemption) * ltcgRate;
         double slabTax = slabGains * slabRate;
-        double totalTax = stcgTax + ltcgTax + slabTax;
+        double interestIncomeTax = interestIncomeGains * slabRate;
+        double totalTax = stcgTax + ltcgTax + slabTax + interestIncomeTax;
 
         return new TaxEstimate(
                 rupees(stcgGains), rupees(ltcgGains),
                 rupees(stcgTax), rupees(ltcgTax), rupees(totalTax),
                 List.copyOf(holdings), List.copyOf(exclusions),
                 rupees(slabGains), rupees(slabTax), List.copyOf(notes),
-                rupees(exemptAmount));
+                rupees(exemptAmount), rupees(interestIncomeGains), rupees(interestIncomeTax));
     }
 
     private static BigDecimal zeroIfNull(BigDecimal v) {
@@ -262,6 +297,10 @@ public class CapitalGainsTaxService {
             return Regime.EXEMPT;
         }
 
+        if (type == InvestmentType.FIXED_DEPOSIT || type == InvestmentType.POST_OFFICE_SCHEME) {
+            return Regime.INTEREST_INCOME;
+        }
+
         return Regime.EXCLUDED;
     }
 
@@ -284,7 +323,9 @@ public class CapitalGainsTaxService {
             BigDecimal slabGains,            // debt-MF gains taxed at slab rate
             BigDecimal slabTaxIfSoldToday,
             List<String> notes,              // GRANDFATHERED / MF_CLASSIFIED_* / PPF_EXEMPT disclosures
-            BigDecimal exemptAmount          // value of fully tax-exempt holdings (informational, zero tax)
+            BigDecimal exemptAmount,         // value of fully tax-exempt holdings (informational, zero tax)
+            BigDecimal interestIncomeGains,  // annual interest, FD/post-office ("Income from Other Sources")
+            BigDecimal interestIncomeTax     // interestIncomeGains × slab rate
     ) {}
 
     public record HoldingTax(

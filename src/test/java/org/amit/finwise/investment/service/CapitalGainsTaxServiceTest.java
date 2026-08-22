@@ -152,6 +152,58 @@ class CapitalGainsTaxServiceTest {
         assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("EXEMPT_VALUE_ASSUMED_FROM_COST")));
     }
 
+    // ── Interest income (FD / post office) ──────────────────────────────────
+
+    @Test
+    void fixedDeposit_computesAnnualInterestAtSlabRate() {
+        Investment fd = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(100_000))
+                .interestRate(BigDecimal.valueOf(7))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(fd));
+
+        assertEquals(7_000.0, est.interestIncomeGains().doubleValue(), 1e-9, "100,000 × 7%");
+        assertEquals(2_100.0, est.interestIncomeTax().doubleValue(), 1e-9, "7,000 × 30% slab");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INTEREST_SIMPLE_ANNUAL_ASSUMED")));
+    }
+
+    @Test
+    void postOfficeScheme_missingInterestRate_degradesGracefullyWithNote() {
+        Investment nsc = Investment.builder()
+                .userId(USER).type(InvestmentType.POST_OFFICE_SCHEME).name("NSC")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(nsc));
+
+        assertEquals(0.0, est.interestIncomeGains().doubleValue(), 1e-9);
+        assertTrue(est.exclusions().contains("NSC"));
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INTEREST_RATE_MISSING")));
+    }
+
+    @Test
+    void interestIncome_sameHighPlatformInterest_flagsLikelyTds() {
+        Investment fd1 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 1")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(300_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+        Investment fd2 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 2")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(300_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(fd1, fd2));
+
+        // 300,000×7% × 2 = 42,000 from the same platform, over the 40,000 TDS threshold
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("TDS_LIKELY") && n.contains("HDFC Bank")));
+    }
+
     // ── Realized netting ─────────────────────────────────────────────────────
 
     @Test
