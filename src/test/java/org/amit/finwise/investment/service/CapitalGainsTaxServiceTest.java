@@ -204,6 +204,76 @@ class CapitalGainsTaxServiceTest {
         assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("TDS_LIKELY") && n.contains("HDFC Bank")));
     }
 
+    // ── Insurance (Section 10(10D)) ──────────────────────────────────────────
+
+    @Test
+    void insurance_premiumWithinTenPercentThreshold_isExempt() {
+        // premium 40,000 / sumAssured 500,000 = 8% ≤ 10% threshold (post-2012 policy)
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("LIC Term Plan")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(600_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(40_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(600_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_EXEMPT_10_10D")));
+    }
+
+    @Test
+    void insurance_premiumExceedsTenPercentThreshold_isTaxedAtSlabRate() {
+        // premium 80,000 / sumAssured 500,000 = 16% > 10% threshold (post-2012 policy)
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("ULIP Growth")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(600_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(200_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(80_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(200_000.0, est.slabGains().doubleValue(), 1e-9);
+        assertEquals(60_000.0, est.slabTaxIfSoldToday().doubleValue(), 1e-9, "200,000 × 30% slab");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_TAXABLE_10_10D")));
+    }
+
+    @Test
+    void insurance_prePost2012Threshold_isTwentyPercentNotTen() {
+        // premium 90,000 / sumAssured 500,000 = 18% — exempt under the pre-2012 20% rule,
+        // would have been taxable under the post-2012 10% rule
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("Old LIC Endowment")
+                .purchaseDate(LocalDate.parse("2010-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(550_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(90_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(550_000.0, est.exemptAmount().doubleValue(), 1e-9);
+    }
+
+    @Test
+    void insurance_missingSumAssured_assumedExemptWithDisclosure() {
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("Unknown Policy")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(500_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(500_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_ASSUMED_EXEMPT_10_10D")));
+    }
+
     // ── Realized netting ─────────────────────────────────────────────────────
 
     @Test

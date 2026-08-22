@@ -302,6 +302,31 @@ public class CapitalGainsTaxService {
             return Regime.INTEREST_INCOME;
         }
 
+        if (type == InvestmentType.INSURANCE_POLICY) {
+            if (inv.getAnnualPremium() == null || inv.getSumAssured() == null
+                    || inv.getSumAssured().signum() == 0) {
+                notes.add("INSURANCE_ASSUMED_EXEMPT_10_10D: " + inv.getName()
+                        + " — premium/sum-assured not on record; exemption assumed "
+                        + "(cannot verify the Section 10(10D) threshold)");
+                return Regime.EXEMPT;
+            }
+            boolean postApril2012 = inv.getPurchaseDate() != null
+                    && !inv.getPurchaseDate().isBefore(LocalDate.of(2012, 4, 1));
+            double threshold = postApril2012 ? 0.10 : 0.20;
+            double ratio = inv.getAnnualPremium().doubleValue() / inv.getSumAssured().doubleValue();
+            if (ratio <= threshold) {
+                notes.add(String.format(Locale.ROOT,
+                        "INSURANCE_EXEMPT_10_10D: %s — premium/sum-assured ratio %.4f within the %.0f%% threshold",
+                        inv.getName(), ratio, threshold * 100));
+                return Regime.EXEMPT;
+            }
+            notes.add(String.format(Locale.ROOT,
+                    "INSURANCE_TAXABLE_10_10D: %s — premium/sum-assured ratio %.4f exceeds the %.0f%% threshold; "
+                    + "proceeds taxed at slab rate (ULIP-specific Section 112A treatment simplified to slab rate here)",
+                    inv.getName(), ratio, threshold * 100));
+            return Regime.DEBT_SLAB;
+        }
+
         return Regime.EXCLUDED;
     }
 
