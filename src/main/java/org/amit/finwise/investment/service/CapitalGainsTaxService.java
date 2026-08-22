@@ -56,6 +56,9 @@ public class CapitalGainsTaxService {
     private final double slabRate;
     private final LocalDate grandfatheringDate;
     private final double tdsThreshold;
+    private final double insuranceExemptThresholdPost2012;
+    private final double insuranceExemptThresholdPre2012;
+    private final LocalDate insuranceExemptCutoffDate;
 
     private static final Pattern DEBT_FUND_NAME = Pattern.compile(
             "debt|liquid|gilt|g-sec|bond|overnight|money market|ultra short|low duration|"
@@ -71,7 +74,10 @@ public class CapitalGainsTaxService {
             @Value("${cfo.tax.ltcg-exemption:125000}") double ltcgExemption,
             @Value("${cfo.tax.slab-rate:0.30}") double slabRate,
             @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate,
-            @Value("${cfo.tax.tds-threshold:40000}") double tdsThreshold) {
+            @Value("${cfo.tax.tds-threshold:40000}") double tdsThreshold,
+            @Value("${cfo.tax.insurance-exempt-threshold-post-2012:0.10}") double insuranceExemptThresholdPost2012,
+            @Value("${cfo.tax.insurance-exempt-threshold-pre-2012:0.20}") double insuranceExemptThresholdPre2012,
+            @Value("${cfo.tax.insurance-exempt-cutoff-date:2012-04-01}") String insuranceExemptCutoffDate) {
         this.stockPriceService = stockPriceService;
         this.lotTrackingService = lotTrackingService;
         this.stcgRate = stcgRate;
@@ -80,6 +86,9 @@ public class CapitalGainsTaxService {
         this.slabRate = slabRate;
         this.grandfatheringDate = LocalDate.parse(grandfatheringDate);
         this.tdsThreshold = tdsThreshold;
+        this.insuranceExemptThresholdPost2012 = insuranceExemptThresholdPost2012;
+        this.insuranceExemptThresholdPre2012 = insuranceExemptThresholdPre2012;
+        this.insuranceExemptCutoffDate = LocalDate.parse(insuranceExemptCutoffDate);
     }
 
     // ── Unrealized estimate ──────────────────────────────────────────────────
@@ -311,8 +320,8 @@ public class CapitalGainsTaxService {
                 return Regime.EXEMPT;
             }
             boolean postApril2012 = inv.getPurchaseDate() != null
-                    && !inv.getPurchaseDate().isBefore(LocalDate.of(2012, 4, 1));
-            double threshold = postApril2012 ? 0.10 : 0.20;
+                    && !inv.getPurchaseDate().isBefore(insuranceExemptCutoffDate);
+            double threshold = postApril2012 ? insuranceExemptThresholdPost2012 : insuranceExemptThresholdPre2012;
             double ratio = inv.getAnnualPremium().doubleValue() / inv.getSumAssured().doubleValue();
             if (ratio <= threshold) {
                 notes.add(String.format(Locale.ROOT,
