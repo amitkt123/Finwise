@@ -86,16 +86,28 @@ public class CapitalGainsTaxService {
         double stcgGains = 0;
         double ltcgGains = 0;
         double slabGains = 0;
+        double exemptAmount = 0;
 
         for (Investment inv : activeInvestments) {
-            if (inv.getUnrealizedGainLoss() == null) continue;
             String label = inv.getSymbol() != null ? inv.getSymbol() : String.valueOf(inv.getType());
-
             Regime regime = regimeOf(inv, notes);
+
             if (regime == Regime.EXCLUDED) {
                 exclusions.add(label);
                 continue;
             }
+
+            if (regime == Regime.EXEMPT) {
+                BigDecimal value = inv.getCurrentValue() != null ? inv.getCurrentValue()
+                        : (inv.getTotalCost() != null ? inv.getTotalCost() : BigDecimal.ZERO);
+                exemptAmount += value.doubleValue();
+                holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "EXEMPT",
+                        zeroIfNull(inv.getUnrealizedGainLoss())));
+                continue;
+            }
+
+            // Remaining regimes (EQUITY / DEBT_SLAB) need a mark-to-market gain figure.
+            if (inv.getUnrealizedGainLoss() == null) continue;
             if (inv.getPurchaseDate() == null) {
                 exclusions.add(label + " (no purchase date)");
                 continue;
@@ -107,13 +119,13 @@ public class CapitalGainsTaxService {
             if (gain > 0) {
                 switch (regime) {
                     case EQUITY -> { if (longTerm) ltcgGains += gain; else stcgGains += gain; }
-                    case SLAB   -> slabGains += gain;
+                    case DEBT_SLAB -> slabGains += gain;
                     default -> { }
                 }
             }
             holdings.add(new HoldingTax(
                     inv.getSymbol(), inv.getPurchaseDate(),
-                    regime == Regime.SLAB ? "SLAB" : (longTerm ? "LTCG" : "STCG"),
+                    regime == Regime.DEBT_SLAB ? "SLAB" : (longTerm ? "LTCG" : "STCG"),
                     inv.getUnrealizedGainLoss()));
         }
 
@@ -126,7 +138,12 @@ public class CapitalGainsTaxService {
                 rupees(stcgGains), rupees(ltcgGains),
                 rupees(stcgTax), rupees(ltcgTax), rupees(totalTax),
                 List.copyOf(holdings), List.copyOf(exclusions),
-                rupees(slabGains), rupees(slabTax), List.copyOf(notes));
+                rupees(slabGains), rupees(slabTax), List.copyOf(notes),
+                rupees(exemptAmount));
+    }
+
+    private static BigDecimal zeroIfNull(BigDecimal v) {
+        return v != null ? v : BigDecimal.ZERO;
     }
 
     /**
@@ -218,22 +235,30 @@ public class CapitalGainsTaxService {
 
     // ── Regime classification ────────────────────────────────────────────────
 
-    private enum Regime { EQUITY, SLAB, EXCLUDED }
+    private enum Regime { EQUITY, DEBT_SLAB, INTEREST_INCOME, NON_EQUITY_FLAT, EXEMPT, EXCLUDED }
 
     private Regime regimeOf(Investment inv, List<String> notes) {
         InvestmentType type = inv.getType();
         if (type == InvestmentType.STOCK || type == InvestmentType.ETF) return Regime.EQUITY;
-        if (type != InvestmentType.MUTUAL_FUND) return Regime.EXCLUDED;
 
-        String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
-        if (DEBT_FUND_NAME.matcher(name).find()) {
-            notes.add("MF_CLASSIFIED_DEBT: " + inv.getName()
-                    + " — taxed at slab rate (post-Apr-2023 debt MF rule); name-based classification");
-            return Regime.SLAB;
+        if (type == InvestmentType.MUTUAL_FUND) {
+            String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
+            if (DEBT_FUND_NAME.matcher(name).find()) {
+                notes.add("MF_CLASSIFIED_DEBT: " + inv.getName()
+                        + " — taxed at slab rate (post-Apr-2023 debt MF rule); name-based classification");
+                return Regime.DEBT_SLAB;
+            }
+            notes.add("MF_ASSUMED_EQUITY: " + inv.getName()
+                    + " — equity-oriented (≥65% equity) assumed from scheme name");
+            return Regime.EQUITY;
         }
-        notes.add("MF_ASSUMED_EQUITY: " + inv.getName()
-                + " — equity-oriented (≥65% equity) assumed from scheme name");
-        return Regime.EQUITY;
+
+        if (type == InvestmentType.PPF) {
+            notes.add("PPF_EXEMPT: " + inv.getName() + " — entire corpus tax-free under Section 10(11)");
+            return Regime.EXEMPT;
+        }
+
+        return Regime.EXCLUDED;
     }
 
     double stcgRate()      { return stcgRate; }
@@ -251,10 +276,11 @@ public class CapitalGainsTaxService {
             BigDecimal ltcgTaxIfSoldToday,   // after annual exemption
             BigDecimal totalTaxIfSoldToday,
             List<HoldingTax> holdings,
-            List<String> exclusions,         // assets outside equity/slab regimes
+            List<String> exclusions,         // assets outside every known regime (e.g. crypto, real estate)
             BigDecimal slabGains,            // debt-MF gains taxed at slab rate
             BigDecimal slabTaxIfSoldToday,
-            List<String> notes               // GRANDFATHERED / MF_CLASSIFIED_* disclosures
+            List<String> notes,              // GRANDFATHERED / MF_CLASSIFIED_* / PPF_EXEMPT disclosures
+            BigDecimal exemptAmount          // value of fully tax-exempt holdings (informational, zero tax)
     ) {}
 
     public record HoldingTax(

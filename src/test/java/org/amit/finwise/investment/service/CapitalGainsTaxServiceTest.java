@@ -118,6 +118,25 @@ class CapitalGainsTaxServiceTest {
         assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("MF_ASSUMED_EQUITY")));
     }
 
+    // ── PPF exemption ─────────────────────────────────────────────────────────
+
+    @Test
+    void ppf_isFullyExemptAndReportedNotDropped() {
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF Account")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(500_000))
+                .totalCost(BigDecimal.valueOf(500_000)).currentValue(BigDecimal.valueOf(650_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(ppf));
+
+        assertEquals(650_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.exclusions().isEmpty(), "PPF must not be silently excluded");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("PPF_EXEMPT")));
+        assertEquals(0.0, est.totalTaxIfSoldToday().doubleValue(), 1e-9);
+    }
+
     // ── Realized netting ─────────────────────────────────────────────────────
 
     @Test
