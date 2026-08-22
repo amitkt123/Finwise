@@ -35,7 +35,7 @@ class CapitalGainsTaxServiceTest {
     @BeforeEach
     void setUp() {
         service = new CapitalGainsTaxService(stockPriceService, lotTrackingService,
-                0.20, 0.125, 125_000, 0.30, "2018-01-31");
+                0.20, 0.125, 125_000, 0.30, "2018-01-31", 40_000);
     }
 
     // ── Grandfathering (canonical §55(2)(ac) worked example) ─────────────────

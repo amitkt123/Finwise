@@ -55,14 +55,13 @@ public class CapitalGainsTaxService {
     private final double ltcgExemption;
     private final double slabRate;
     private final LocalDate grandfatheringDate;
+    private final double tdsThreshold;
 
     private static final Pattern DEBT_FUND_NAME = Pattern.compile(
             "debt|liquid|gilt|g-sec|bond|overnight|money market|ultra short|low duration|"
             + "short duration|medium duration|long duration|corporate bond|credit risk|"
             + "banking (&|and) psu|floater|floating rate|treasury|fmp|fixed maturity",
             Pattern.CASE_INSENSITIVE);
-
-    private static final double TDS_THRESHOLD = 40_000;
 
     public CapitalGainsTaxService(
             StockPriceService stockPriceService,
@@ -71,7 +70,8 @@ public class CapitalGainsTaxService {
             @Value("${cfo.tax.ltcg-rate:0.125}") double ltcgRate,
             @Value("${cfo.tax.ltcg-exemption:125000}") double ltcgExemption,
             @Value("${cfo.tax.slab-rate:0.30}") double slabRate,
-            @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate) {
+            @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate,
+            @Value("${cfo.tax.tds-threshold:40000}") double tdsThreshold) {
         this.stockPriceService = stockPriceService;
         this.lotTrackingService = lotTrackingService;
         this.stcgRate = stcgRate;
@@ -79,6 +79,7 @@ public class CapitalGainsTaxService {
         this.ltcgExemption = ltcgExemption;
         this.slabRate = slabRate;
         this.grandfatheringDate = LocalDate.parse(grandfatheringDate);
+        this.tdsThreshold = tdsThreshold;
     }
 
     // ── Unrealized estimate ──────────────────────────────────────────────────
@@ -159,7 +160,7 @@ public class CapitalGainsTaxService {
         }
 
         for (Map.Entry<String, Double> e : interestByPlatform.entrySet()) {
-            if (e.getValue() > TDS_THRESHOLD) {
+            if (e.getValue() > tdsThreshold) {
                 notes.add(String.format(
                         "TDS_LIKELY: interest from %s (₹%.0f) exceeds the ₹40,000 TDS threshold — "
                         + "the payer likely deducted 10%% TDS; verify against Form 26AS",
