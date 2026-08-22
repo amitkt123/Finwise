@@ -414,6 +414,28 @@ class CapitalGainsTaxServiceTest {
         assertEquals(0.0, s.taxableLtcg().doubleValue(), 1e-9);
     }
 
+    @Test
+    void realizedTax_nonEquityFlatSale_usesFlatRateNotEquityNetting() {
+        // Gold sold at a 30,000 gain. buyDate→sellDate is 29 months apart (> 24-month non-equity
+        // LT threshold) even though the ledger's own longTerm flag (1-year equity rule) is false —
+        // realizedTax() must use its own 24-month check for NON_EQUITY_FLAT, not the ledger's flag.
+        when(lotTrackingService.buildLedger(USER)).thenReturn(new LotTrackingService.LotLedger(
+                Map.of(), List.of(new LotTrackingService.RealizedGain(
+                        "GOLDBEES",
+                        LocalDate.parse("2023-01-01"), LocalDate.parse("2025-06-01"),
+                        BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(30_000),
+                        false, InvestmentType.GOLD)),
+                List.of()));
+
+        CapitalGainsTaxService.RealizedTaxSummary s =
+                service.realizedTax(USER, LocalDate.parse("2025-06-15"));
+
+        assertEquals(30_000.0, s.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(3_750.0, s.nonEquityFlatTax().doubleValue(), 1e-9, "30,000 × 12.5%, held > 24 months");
+        assertEquals(0.0, s.taxableStcg().doubleValue(), 1e-9, "must not enter equity netting");
+        assertEquals(0.0, s.taxableLtcg().doubleValue(), 1e-9, "must not enter equity netting");
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private static Investment legacy(String symbol, double cost, double current, double qty) {
@@ -435,10 +457,16 @@ class CapitalGainsTaxServiceTest {
     /** Builds a RealizedGain whose gain() equals the requested rupee amount. */
     private static LotTrackingService.RealizedGain realized(String sym, double gain,
                                                             boolean longTerm, String sellDate) {
+        return realized(sym, gain, longTerm, sellDate, InvestmentType.STOCK);
+    }
+
+    private static LotTrackingService.RealizedGain realized(String sym, double gain,
+                                                            boolean longTerm, String sellDate,
+                                                            InvestmentType type) {
         // qty 1, cost 0, sell price = gain → gain() = gain
         return new LotTrackingService.RealizedGain(sym,
                 LocalDate.parse(sellDate).minusYears(longTerm ? 2 : 0).minusDays(longTerm ? 0 : 30),
                 LocalDate.parse(sellDate),
-                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(gain), longTerm);
+                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(gain), longTerm, type);
     }
 }

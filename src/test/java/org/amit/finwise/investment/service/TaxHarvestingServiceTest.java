@@ -115,7 +115,7 @@ class TaxHarvestingServiceTest {
                 .thenReturn(new CapitalGainsTaxService.RealizedTaxSummary(
                         LocalDate.parse("2026-04-01"), LocalDate.parse("2027-03-31"),
                         bd(0), bd(0), bd(0), bd(0), bd(0), bd(0),
-                        bd(125_000 - headroom), bd(headroom), bd(0), bd(0), List.of()));
+                        bd(125_000 - headroom), bd(headroom), bd(0), bd(0), List.of(), bd(0), bd(0)));
     }
 
     private void mockHoldings(Investment... investments) {

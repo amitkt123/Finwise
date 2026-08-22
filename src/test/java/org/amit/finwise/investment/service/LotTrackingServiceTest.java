@@ -2,6 +2,7 @@ package org.amit.finwise.investment.service;
 
 import org.amit.finwise.cfo.model.Transaction;
 import org.amit.finwise.cfo.repository.TransactionRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -13,6 +14,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 /**
@@ -22,9 +24,15 @@ import static org.mockito.Mockito.when;
 class LotTrackingServiceTest {
 
     @Mock TransactionRepository transactionRepository;
+    @Mock org.amit.finwise.investment.repository.InvestmentRepository investmentRepository;
     @InjectMocks LotTrackingService service;
 
     private static final String USER = "u";
+
+    @BeforeEach
+    void setUp() {
+        lenient().when(investmentRepository.findByUserId(USER)).thenReturn(List.of());
+    }
 
     @Test
     void sellConsumesOldestLotsFirstAndSplitsAcrossLots() {
@@ -91,6 +99,38 @@ class LotTrackingServiceTest {
         LotTrackingService.LotLedger ledger = service.buildLedger(USER);
         assertEquals(0, ledger.openLotsBySymbol().get("HDFC").getFirst()
                 .costPerUnit().compareTo(BigDecimal.valueOf(1500)));
+    }
+
+    @Test
+    void realizedGain_carriesInvestmentTypeFromInvestmentRecord() {
+        when(transactionRepository.findBuySellTransactionsAsc(USER)).thenReturn(List.of(
+                buy("GOLDBEES", "2023-01-10", 10, 50),
+                sell("GOLDBEES", "2025-06-10", 10, 65)));
+        when(investmentRepository.findByUserId(USER)).thenReturn(List.of(
+                org.amit.finwise.investment.model.Investment.builder()
+                        .userId(USER).type(org.amit.finwise.investment.enums.InvestmentType.GOLD)
+                        .symbol("GOLDBEES").name("Gold BeES ETF")
+                        .purchaseDate(LocalDate.parse("2023-01-10"))
+                        .quantity(BigDecimal.TEN).costPerUnit(BigDecimal.valueOf(50))
+                        .totalCost(BigDecimal.valueOf(500))
+                        .build()));
+
+        LotTrackingService.LotLedger ledger = service.buildLedger(USER);
+
+        assertEquals(org.amit.finwise.investment.enums.InvestmentType.GOLD,
+                ledger.realizedGains().getFirst().investmentType());
+    }
+
+    @Test
+    void realizedGain_unknownSymbol_defaultsToStock() {
+        when(transactionRepository.findBuySellTransactionsAsc(USER)).thenReturn(List.of(
+                buy("TCS", "2023-01-10", 10, 100),
+                sell("TCS", "2025-01-10", 10, 200)));
+
+        LotTrackingService.LotLedger ledger = service.buildLedger(USER);
+
+        assertEquals(org.amit.finwise.investment.enums.InvestmentType.STOCK,
+                ledger.realizedGains().getFirst().investmentType());
     }
 
     // ── fixtures ────────────────────────────────────────────────────────────

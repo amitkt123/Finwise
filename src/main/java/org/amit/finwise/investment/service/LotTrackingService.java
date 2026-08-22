@@ -4,6 +4,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.amit.finwise.cfo.model.Transaction;
 import org.amit.finwise.cfo.repository.TransactionRepository;
+import org.amit.finwise.investment.enums.InvestmentType;
+import org.amit.finwise.investment.model.Investment;
+import org.amit.finwise.investment.repository.InvestmentRepository;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -15,6 +18,7 @@ import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Rebuilds a per-symbol FIFO tax-lot ledger from BUY/SELL transaction history.
@@ -34,6 +38,7 @@ import java.util.Map;
 public class LotTrackingService {
 
     private final TransactionRepository transactionRepository;
+    private final InvestmentRepository investmentRepository;
 
     /** An open (not yet fully sold) FIFO lot. */
     public record HoldingLot(
@@ -62,7 +67,8 @@ public class LotTrackingService {
             BigDecimal quantity,
             BigDecimal costPerUnit,
             BigDecimal sellPricePerUnit,
-            boolean longTerm
+            boolean longTerm,
+            InvestmentType investmentType
     ) {
         public double gain() {
             return sellPricePerUnit.subtract(costPerUnit).multiply(quantity).doubleValue();
@@ -77,6 +83,9 @@ public class LotTrackingService {
 
     public LotLedger buildLedger(String userId) {
         List<Transaction> txns = transactionRepository.findBuySellTransactionsAsc(userId);
+        Map<String, InvestmentType> typeBySymbol = investmentRepository.findByUserId(userId).stream()
+                .filter(i -> i.getSymbol() != null)
+                .collect(Collectors.toMap(i -> i.getSymbol().toUpperCase(), Investment::getType, (a, b) -> a));
 
         Map<String, Deque<MutableLot>> open = new LinkedHashMap<>();
         List<RealizedGain> realized = new ArrayList<>();
@@ -101,12 +110,13 @@ public class LotTrackingService {
             // SELL: consume oldest lots first
             BigDecimal remaining = qty;
             Deque<MutableLot> lots = open.get(sym);
+            InvestmentType invType = typeBySymbol.getOrDefault(sym, InvestmentType.STOCK);
             while (remaining.signum() > 0 && lots != null && !lots.isEmpty()) {
                 MutableLot lot = lots.peekFirst();
                 BigDecimal consumed = lot.quantity.min(remaining);
                 boolean longTerm = lot.buyDate.isBefore(t.getTransactionDate().minusYears(1));
                 realized.add(new RealizedGain(sym, lot.buyDate, t.getTransactionDate(),
-                        consumed, lot.costPerUnit, price, longTerm));
+                        consumed, lot.costPerUnit, price, longTerm, invType));
                 lot.quantity = lot.quantity.subtract(consumed);
                 remaining = remaining.subtract(consumed);
                 if (lot.quantity.signum() <= 0) lots.removeFirst();

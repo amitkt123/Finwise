@@ -269,8 +269,21 @@ public class CapitalGainsTaxService {
 
         double st = 0;
         double lt = 0;
+        double nonEquityFlatGains = 0;
+        double nonEquityFlatTax = 0;
         for (LotTrackingService.RealizedGain g : ledger.realizedGains()) {
             if (g.sellDate().isBefore(fyStart) || g.sellDate().isAfter(fyEnd)) continue;
+
+            if (isNonEquityFlat(g.investmentType())) {
+                boolean ltNonEquity = g.buyDate().isBefore(g.sellDate().minusMonths(nonEquityLtMonths));
+                double gain = g.gain();
+                if (gain > 0) {
+                    nonEquityFlatGains += gain;
+                    nonEquityFlatTax += ltNonEquity ? gain * nonEquityLtcgRate : gain * slabRate;
+                }
+                continue;
+            }
+
             if (g.longTerm()) lt += g.gain(); else st += g.gain();
         }
 
@@ -303,7 +316,12 @@ public class CapitalGainsTaxService {
                 rupees(taxableStcg * stcgRate), rupees(taxableLtcg * ltcgRate),
                 rupees(exemptionUsed), rupees(Math.max(0, ltcgExemption - positiveLtcg)),
                 rupees(carryForwardStcl), rupees(carryForwardLtcl),
-                List.copyOf(notes));
+                List.copyOf(notes),
+                rupees(nonEquityFlatGains), rupees(nonEquityFlatTax));
+    }
+
+    private static boolean isNonEquityFlat(InvestmentType type) {
+        return type == InvestmentType.GOLD || type == InvestmentType.BOND || type == InvestmentType.COMMODITY;
     }
 
     // ── Regime classification ────────────────────────────────────────────────
@@ -420,6 +438,8 @@ public class CapitalGainsTaxService {
             BigDecimal exemptionHeadroom,    // ₹ of LTCG still realizable tax-free this FY
             BigDecimal carryForwardStcl,
             BigDecimal carryForwardLtcl,
-            List<String> notes
+            List<String> notes,
+            BigDecimal nonEquityFlatGains,   // GOLD/BOND/COMMODITY realized gains, flat rate
+            BigDecimal nonEquityFlatTax
     ) {}
 }
