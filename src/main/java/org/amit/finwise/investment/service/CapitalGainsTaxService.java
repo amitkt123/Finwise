@@ -156,6 +156,11 @@ public class CapitalGainsTaxService {
                 continue;
             }
 
+            if (regime == Regime.NON_EQUITY_FLAT && inv.getUnrealizedGainLoss() == null) {
+                exclusions.add(label + " (no unrealized gain/loss on record)");
+                continue;
+            }
+
             // Remaining regimes (EQUITY / DEBT_SLAB / NON_EQUITY_FLAT) need a mark-to-market gain figure.
             if (inv.getUnrealizedGainLoss() == null) continue;
             if (inv.getPurchaseDate() == null) {
@@ -194,9 +199,9 @@ public class CapitalGainsTaxService {
         for (Map.Entry<String, Double> e : interestByPlatform.entrySet()) {
             if (e.getValue() > tdsThreshold) {
                 notes.add(String.format(
-                        "TDS_LIKELY: interest from %s (₹%.0f) exceeds the ₹40,000 TDS threshold — "
+                        "TDS_LIKELY: interest from %s (₹%.0f) exceeds the ₹%.0f TDS threshold — "
                         + "the payer likely deducted 10%% TDS; verify against Form 26AS",
-                        e.getKey(), e.getValue()));
+                        e.getKey(), e.getValue(), tdsThreshold));
             }
         }
 

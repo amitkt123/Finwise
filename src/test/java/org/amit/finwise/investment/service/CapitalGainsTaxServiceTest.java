@@ -201,7 +201,37 @@ class CapitalGainsTaxServiceTest {
         CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(fd1, fd2));
 
         // 300,000×7% × 2 = 42,000 from the same platform, over the 40,000 TDS threshold
-        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("TDS_LIKELY") && n.contains("HDFC Bank")));
+        assertTrue(est.notes().stream().anyMatch(n ->
+                n.startsWith("TDS_LIKELY") && n.contains("HDFC Bank") && n.contains("₹40000")),
+                "note should interpolate the configured tds-threshold, not hardcode it");
+    }
+
+    @Test
+    void interestIncome_tdsNote_interpolatesConfiguredThreshold_notHardcoded() {
+        // Reconfigure tds-threshold away from the 40,000 default; the disclosure text
+        // must reflect the actual configured value, not a hardcoded "₹40,000".
+        CapitalGainsTaxService customService = new CapitalGainsTaxService(
+                stockPriceService, lotTrackingService,
+                0.20, 0.125, 125_000, 0.30, "2018-01-31", 20_000, 0.10, 0.20, "2012-04-01", 0.125, 24);
+
+        Investment fd1 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 1")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(150_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+        Investment fd2 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 2")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(150_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+
+        CapitalGainsTaxService.TaxEstimate est = customService.estimate(List.of(fd1, fd2));
+
+        // 150,000×7% × 2 = 21,000, over the reconfigured 20,000 threshold but well
+        // under the default 40,000 — proves the note tracks the configured value.
+        assertTrue(est.notes().stream().anyMatch(n ->
+                n.startsWith("TDS_LIKELY") && n.contains("₹20000") && !n.contains("₹40000")),
+                "note should reflect the reconfigured 20,000 threshold, got: " + est.notes());
     }
 
     // ── Insurance (Section 10(10D)) ──────────────────────────────────────────
@@ -362,6 +392,28 @@ class CapitalGainsTaxServiceTest {
 
         assertEquals(100_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
         assertEquals(0.0, est.exemptAmount().doubleValue(), 1e-9);
+    }
+
+    @Test
+    void nonEquityFlat_nullUnrealizedGainLoss_excludedNotSilentlyDropped() {
+        // GOLD/BOND/COMMODITY holding with no gain data must surface in exclusions
+        // (not throw, not vanish from the output entirely).
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(null)
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = assertDoesNotThrow(
+                () -> service.estimate(List.of(gold)));
+
+        assertTrue(est.exclusions().stream().anyMatch(e -> e.startsWith("Physical Gold")),
+                "expected the gold holding to be reported in exclusions, got: " + est.exclusions());
+        assertEquals(0.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(0.0, est.nonEquityFlatTax().doubleValue(), 1e-9);
+        assertTrue(est.holdings().isEmpty(), "excluded holding should not also appear in holdings");
     }
 
     // ── Realized netting ─────────────────────────────────────────────────────
