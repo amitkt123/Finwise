@@ -32,7 +32,9 @@ public class InvestmentController {
         return ResponseEntity.ok(InvestmentResponse.from(
                 investmentService.addInvestment(
                         principal.getUsername(), request.type(), request.symbol(), request.name(),
-                        LocalDate.now(), request.quantity(), request.costPerUnit(), request.platform())));
+                        LocalDate.now(), request.quantity(), request.costPerUnit(), request.platform(),
+                        request.interestRate(), request.maturityDate(),
+                        request.sumAssured(), request.annualPremium())));
     }
 
     @PutMapping("/investment/{id}/price")

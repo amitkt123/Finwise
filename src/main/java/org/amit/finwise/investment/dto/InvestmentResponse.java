@@ -23,7 +23,11 @@ public record InvestmentResponse(
         BigDecimal unrealizedGainLoss,
         BigDecimal gainLossPercentage,
         Boolean isActive,
-        RiskProfile riskProfile
+        RiskProfile riskProfile,
+        BigDecimal interestRate,
+        LocalDate maturityDate,
+        BigDecimal sumAssured,
+        BigDecimal annualPremium
 ) {
     public static InvestmentResponse from(Investment i) {
         return new InvestmentResponse(
@@ -42,7 +46,11 @@ public record InvestmentResponse(
                 i.getUnrealizedGainLoss(),
                 i.getGainLossPercentage(),
                 i.getIsActive(),
-                i.getRiskProfile()
+                i.getRiskProfile(),
+                i.getInterestRate(),
+                i.getMaturityDate(),
+                i.getSumAssured(),
+                i.getAnnualPremium()
         );
     }
 }
