@@ -35,7 +35,7 @@ class CapitalGainsTaxServiceTest {
     @BeforeEach
     void setUp() {
         service = new CapitalGainsTaxService(stockPriceService, lotTrackingService,
-                0.20, 0.125, 125_000, 0.30, "2018-01-31", 40_000, 0.10, 0.20, "2012-04-01");
+                0.20, 0.125, 125_000, 0.30, "2018-01-31", 40_000, 0.10, 0.20, "2012-04-01", 0.125, 24);
     }
 
     // ── Grandfathering (canonical §55(2)(ac) worked example) ─────────────────
@@ -272,6 +272,96 @@ class CapitalGainsTaxServiceTest {
 
         assertEquals(500_000.0, est.exemptAmount().doubleValue(), 1e-9);
         assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_ASSUMED_EXEMPT_10_10D")));
+    }
+
+    // ── Non-equity flat-rate assets (gold / bond / commodity) ────────────────
+
+    @Test
+    void gold_longTerm_flatRateNoIndexation() {
+        // Held 25 months (> 24-month LT threshold), gain 100,000 × 12.5% flat = 12,500
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(100_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(12_500.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "100,000 × 12.5% flat, no indexation");
+    }
+
+    @Test
+    void gold_shortTerm_taxedAtSlabRateNotFlatRate() {
+        // Held 23 months (< 24-month LT threshold) → slab rate, not the 12.5% LT rate
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(23))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(30_000.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "100,000 × 30% slab, short-term");
+    }
+
+    @Test
+    void bondAndCommodity_alsoUseNonEquityFlatRegime() {
+        Investment bond = Investment.builder()
+                .userId(USER).type(InvestmentType.BOND).name("REC Bond")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(100_000))
+                .currentPrice(BigDecimal.valueOf(120_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(20_000))
+                .build();
+        Investment commodity = Investment.builder()
+                .userId(USER).type(InvestmentType.COMMODITY).name("Silver ETF")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .currentPrice(BigDecimal.valueOf(60_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(10_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(bond, commodity));
+
+        assertEquals(30_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(3_750.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "30,000 × 12.5%");
+    }
+
+    @Test
+    void sovereignGoldBond_nameMatch_isExemptNotFlatRate() {
+        Investment sgb = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Sovereign Gold Bond 2031 Series IV")
+                .purchaseDate(LocalDate.now().minusYears(3))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .currentValue(BigDecimal.valueOf(70_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(sgb));
+
+        assertEquals(70_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertEquals(0.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("GOLD_ASSUMED_SGB_EXEMPT")));
+    }
+
+    @Test
+    void physicalGold_nameDoesNotMatchSgb_usesFlatRateRegime() {
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold Coin")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(100_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(0.0, est.exemptAmount().doubleValue(), 1e-9);
     }
 
     // ── Realized netting ─────────────────────────────────────────────────────
