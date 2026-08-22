@@ -98,8 +98,12 @@ public class CapitalGainsTaxService {
             }
 
             if (regime == Regime.EXEMPT) {
-                BigDecimal value = inv.getCurrentValue() != null ? inv.getCurrentValue()
-                        : (inv.getTotalCost() != null ? inv.getTotalCost() : BigDecimal.ZERO);
+                BigDecimal value = inv.getCurrentValue();
+                if (value == null) {
+                    value = inv.getTotalCost() != null ? inv.getTotalCost() : BigDecimal.ZERO;
+                    notes.add("EXEMPT_VALUE_ASSUMED_FROM_COST: " + inv.getName()
+                            + " — no currentValue on record, exempt amount estimated from totalCost");
+                }
                 exemptAmount += value.doubleValue();
                 holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "EXEMPT",
                         zeroIfNull(inv.getUnrealizedGainLoss())));

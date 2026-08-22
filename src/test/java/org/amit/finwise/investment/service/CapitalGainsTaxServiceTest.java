@@ -137,6 +137,21 @@ class CapitalGainsTaxServiceTest {
         assertEquals(0.0, est.totalTaxIfSoldToday().doubleValue(), 1e-9);
     }
 
+    @Test
+    void ppf_missingCurrentValue_fallsBackToTotalCostWithDisclosure() {
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF Account")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(500_000))
+                .totalCost(BigDecimal.valueOf(500_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(ppf));
+
+        assertEquals(500_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("EXEMPT_VALUE_ASSUMED_FROM_COST")));
+    }
+
     // ── Realized netting ─────────────────────────────────────────────────────
 
     @Test
