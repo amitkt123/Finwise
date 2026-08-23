@@ -51,4 +51,20 @@ public class RiskProperties {
 
     /** Minimum upward gap (corrected − naive) before the Dimson beta replaces the naive one. */
     private double dimsonMinBetaGap = 0.15;
+
+    /**
+     * Long-run annual equity risk premium over the risk-free rate, used as the Bayesian prior
+     * that trailing sample-mean drift is shrunk toward in multi-year Monte Carlo projections
+     * (a 3-year daily-return sample mean has a standard error far larger than its own
+     * magnitude, so it cannot be trusted unshrunk over a decade-long horizon).
+     */
+    private double equityRiskPremium = 0.05;
+
+    /**
+     * Pseudo-count (in equivalent trading days) for drift shrinkage: {@code muShrunk =
+     * (T·muSample + K·muPrior) / (T + K)} — the same shrinkage shape used by
+     * {@code ConfidenceCalibrationService}. Set high (default ≈10 trading years) because a
+     * daily-return sample mean stays noisy for far longer than a typical lookback window.
+     */
+    private double driftShrinkageDays = 2500;
 }
