@@ -11,8 +11,10 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -53,12 +55,21 @@ public class CapitalGainsTaxService {
     private final double ltcgExemption;
     private final double slabRate;
     private final LocalDate grandfatheringDate;
+    private final double tdsThreshold;
+    private final double insuranceExemptThresholdPost2012;
+    private final double insuranceExemptThresholdPre2012;
+    private final LocalDate insuranceExemptCutoffDate;
+    private final double nonEquityLtcgRate;
+    private final int nonEquityLtMonths;
 
     private static final Pattern DEBT_FUND_NAME = Pattern.compile(
             "debt|liquid|gilt|g-sec|bond|overnight|money market|ultra short|low duration|"
             + "short duration|medium duration|long duration|corporate bond|credit risk|"
             + "banking (&|and) psu|floater|floating rate|treasury|fmp|fixed maturity",
             Pattern.CASE_INSENSITIVE);
+
+    private static final Pattern SGB_NAME = Pattern.compile(
+            "sovereign gold bond|\\bsgb\\b", Pattern.CASE_INSENSITIVE);
 
     public CapitalGainsTaxService(
             StockPriceService stockPriceService,
@@ -67,7 +78,13 @@ public class CapitalGainsTaxService {
             @Value("${cfo.tax.ltcg-rate:0.125}") double ltcgRate,
             @Value("${cfo.tax.ltcg-exemption:125000}") double ltcgExemption,
             @Value("${cfo.tax.slab-rate:0.30}") double slabRate,
-            @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate) {
+            @Value("${cfo.tax.grandfathering-date:2018-01-31}") String grandfatheringDate,
+            @Value("${cfo.tax.tds-threshold:40000}") double tdsThreshold,
+            @Value("${cfo.tax.insurance-exempt-threshold-post-2012:0.10}") double insuranceExemptThresholdPost2012,
+            @Value("${cfo.tax.insurance-exempt-threshold-pre-2012:0.20}") double insuranceExemptThresholdPre2012,
+            @Value("${cfo.tax.insurance-exempt-cutoff-date:2012-04-01}") String insuranceExemptCutoffDate,
+            @Value("${cfo.tax.non-equity-ltcg-rate:0.125}") double nonEquityLtcgRate,
+            @Value("${cfo.tax.non-equity-lt-months:24}") int nonEquityLtMonths) {
         this.stockPriceService = stockPriceService;
         this.lotTrackingService = lotTrackingService;
         this.stcgRate = stcgRate;
@@ -75,6 +92,12 @@ public class CapitalGainsTaxService {
         this.ltcgExemption = ltcgExemption;
         this.slabRate = slabRate;
         this.grandfatheringDate = LocalDate.parse(grandfatheringDate);
+        this.tdsThreshold = tdsThreshold;
+        this.insuranceExemptThresholdPost2012 = insuranceExemptThresholdPost2012;
+        this.insuranceExemptThresholdPre2012 = insuranceExemptThresholdPre2012;
+        this.insuranceExemptCutoffDate = LocalDate.parse(insuranceExemptCutoffDate);
+        this.nonEquityLtcgRate = nonEquityLtcgRate;
+        this.nonEquityLtMonths = nonEquityLtMonths;
     }
 
     // ── Unrealized estimate ──────────────────────────────────────────────────
@@ -86,18 +109,74 @@ public class CapitalGainsTaxService {
         double stcgGains = 0;
         double ltcgGains = 0;
         double slabGains = 0;
+        double exemptAmount = 0;
+        double interestIncomeGains = 0;
+        double nonEquityFlatGains = 0;
+        double nonEquityFlatTax = 0;
+        Map<String, Double> interestByPlatform = new HashMap<>();
 
         for (Investment inv : activeInvestments) {
-            if (inv.getUnrealizedGainLoss() == null) continue;
-            String label = inv.getSymbol() != null ? inv.getSymbol() : String.valueOf(inv.getType());
-
+            String label = inv.getSymbol() != null ? inv.getSymbol() : inv.getName();
             Regime regime = regimeOf(inv, notes);
+
             if (regime == Regime.EXCLUDED) {
                 exclusions.add(label);
                 continue;
             }
+
+            if (regime == Regime.EXEMPT) {
+                BigDecimal value = inv.getCurrentValue();
+                if (value == null) {
+                    value = inv.getTotalCost() != null ? inv.getTotalCost() : BigDecimal.ZERO;
+                    notes.add("EXEMPT_VALUE_ASSUMED_FROM_COST: " + inv.getName()
+                            + " — no currentValue on record, exempt amount estimated from totalCost");
+                }
+                exemptAmount += value.doubleValue();
+                holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "EXEMPT",
+                        zeroIfNull(inv.getUnrealizedGainLoss())));
+                continue;
+            }
+
+            if (regime == Regime.INTEREST_INCOME) {
+                if (inv.getInterestRate() == null) {
+                    notes.add("INTEREST_RATE_MISSING: " + label
+                            + " — no interestRate on record, excluded from interest-income estimate");
+                    exclusions.add(label);
+                    continue;
+                }
+                double principal = inv.getCostPerUnit().multiply(inv.getQuantity()).doubleValue();
+                double annualInterest = principal * inv.getInterestRate().doubleValue() / 100.0;
+                interestIncomeGains += annualInterest;
+                String payer = inv.getPlatform() != null ? inv.getPlatform() : "UNKNOWN";
+                interestByPlatform.merge(payer, annualInterest, Double::sum);
+                notes.add("INTEREST_SIMPLE_ANNUAL_ASSUMED: " + label
+                        + " — simple annual accrual at " + inv.getInterestRate() + "%, not compounded");
+                holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(), "INTEREST_INCOME",
+                        rupees(annualInterest)));
+                continue;
+            }
+
+            if (regime == Regime.NON_EQUITY_FLAT && inv.getUnrealizedGainLoss() == null) {
+                exclusions.add(label + " (no unrealized gain/loss on record)");
+                continue;
+            }
+
+            // Remaining regimes (EQUITY / DEBT_SLAB / NON_EQUITY_FLAT) need a mark-to-market gain figure.
+            if (inv.getUnrealizedGainLoss() == null) continue;
             if (inv.getPurchaseDate() == null) {
                 exclusions.add(label + " (no purchase date)");
+                continue;
+            }
+
+            if (regime == Regime.NON_EQUITY_FLAT) {
+                boolean ltNonEquity = inv.getPurchaseDate().isBefore(LocalDate.now().minusMonths(nonEquityLtMonths));
+                double flatGain = inv.getUnrealizedGainLoss().doubleValue();
+                if (flatGain > 0) {
+                    nonEquityFlatGains += flatGain;
+                    nonEquityFlatTax += ltNonEquity ? flatGain * nonEquityLtcgRate : flatGain * slabRate;
+                }
+                holdings.add(new HoldingTax(inv.getSymbol(), inv.getPurchaseDate(),
+                        ltNonEquity ? "LTCG_FLAT" : "STCG_SLAB", inv.getUnrealizedGainLoss()));
                 continue;
             }
 
@@ -107,26 +186,42 @@ public class CapitalGainsTaxService {
             if (gain > 0) {
                 switch (regime) {
                     case EQUITY -> { if (longTerm) ltcgGains += gain; else stcgGains += gain; }
-                    case SLAB   -> slabGains += gain;
+                    case DEBT_SLAB -> slabGains += gain;
                     default -> { }
                 }
             }
             holdings.add(new HoldingTax(
                     inv.getSymbol(), inv.getPurchaseDate(),
-                    regime == Regime.SLAB ? "SLAB" : (longTerm ? "LTCG" : "STCG"),
+                    regime == Regime.DEBT_SLAB ? "SLAB" : (longTerm ? "LTCG" : "STCG"),
                     inv.getUnrealizedGainLoss()));
+        }
+
+        for (Map.Entry<String, Double> e : interestByPlatform.entrySet()) {
+            if (e.getValue() > tdsThreshold) {
+                notes.add(String.format(
+                        "TDS_LIKELY: interest from %s (₹%.0f) exceeds the ₹%.0f TDS threshold — "
+                        + "the payer likely deducted 10%% TDS; verify against Form 26AS",
+                        e.getKey(), e.getValue(), tdsThreshold));
+            }
         }
 
         double stcgTax = stcgGains * stcgRate;
         double ltcgTax = Math.max(0, ltcgGains - ltcgExemption) * ltcgRate;
         double slabTax = slabGains * slabRate;
-        double totalTax = stcgTax + ltcgTax + slabTax;
+        double interestIncomeTax = interestIncomeGains * slabRate;
+        double totalTax = stcgTax + ltcgTax + slabTax + interestIncomeTax + nonEquityFlatTax;
 
         return new TaxEstimate(
                 rupees(stcgGains), rupees(ltcgGains),
                 rupees(stcgTax), rupees(ltcgTax), rupees(totalTax),
                 List.copyOf(holdings), List.copyOf(exclusions),
-                rupees(slabGains), rupees(slabTax), List.copyOf(notes));
+                rupees(slabGains), rupees(slabTax), List.copyOf(notes),
+                rupees(exemptAmount), rupees(interestIncomeGains), rupees(interestIncomeTax),
+                rupees(nonEquityFlatGains), rupees(nonEquityFlatTax));
+    }
+
+    private static BigDecimal zeroIfNull(BigDecimal v) {
+        return v != null ? v : BigDecimal.ZERO;
     }
 
     /**
@@ -179,8 +274,21 @@ public class CapitalGainsTaxService {
 
         double st = 0;
         double lt = 0;
+        double nonEquityFlatGains = 0;
+        double nonEquityFlatTax = 0;
         for (LotTrackingService.RealizedGain g : ledger.realizedGains()) {
             if (g.sellDate().isBefore(fyStart) || g.sellDate().isAfter(fyEnd)) continue;
+
+            if (isNonEquityFlat(g.investmentType())) {
+                boolean ltNonEquity = g.buyDate().isBefore(g.sellDate().minusMonths(nonEquityLtMonths));
+                double gain = g.gain();
+                if (gain > 0) {
+                    nonEquityFlatGains += gain;
+                    nonEquityFlatTax += ltNonEquity ? gain * nonEquityLtcgRate : gain * slabRate;
+                }
+                continue;
+            }
+
             if (g.longTerm()) lt += g.gain(); else st += g.gain();
         }
 
@@ -213,27 +321,80 @@ public class CapitalGainsTaxService {
                 rupees(taxableStcg * stcgRate), rupees(taxableLtcg * ltcgRate),
                 rupees(exemptionUsed), rupees(Math.max(0, ltcgExemption - positiveLtcg)),
                 rupees(carryForwardStcl), rupees(carryForwardLtcl),
-                List.copyOf(notes));
+                List.copyOf(notes),
+                rupees(nonEquityFlatGains), rupees(nonEquityFlatTax));
+    }
+
+    private static boolean isNonEquityFlat(InvestmentType type) {
+        return type == InvestmentType.GOLD || type == InvestmentType.BOND || type == InvestmentType.COMMODITY;
     }
 
     // ── Regime classification ────────────────────────────────────────────────
 
-    private enum Regime { EQUITY, SLAB, EXCLUDED }
+    private enum Regime { EQUITY, DEBT_SLAB, INTEREST_INCOME, NON_EQUITY_FLAT, EXEMPT, EXCLUDED }
 
     private Regime regimeOf(Investment inv, List<String> notes) {
         InvestmentType type = inv.getType();
         if (type == InvestmentType.STOCK || type == InvestmentType.ETF) return Regime.EQUITY;
-        if (type != InvestmentType.MUTUAL_FUND) return Regime.EXCLUDED;
 
-        String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
-        if (DEBT_FUND_NAME.matcher(name).find()) {
-            notes.add("MF_CLASSIFIED_DEBT: " + inv.getName()
-                    + " — taxed at slab rate (post-Apr-2023 debt MF rule); name-based classification");
-            return Regime.SLAB;
+        if (type == InvestmentType.MUTUAL_FUND) {
+            String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
+            if (DEBT_FUND_NAME.matcher(name).find()) {
+                notes.add("MF_CLASSIFIED_DEBT: " + inv.getName()
+                        + " — taxed at slab rate (post-Apr-2023 debt MF rule); name-based classification");
+                return Regime.DEBT_SLAB;
+            }
+            notes.add("MF_ASSUMED_EQUITY: " + inv.getName()
+                    + " — equity-oriented (≥65% equity) assumed from scheme name");
+            return Regime.EQUITY;
         }
-        notes.add("MF_ASSUMED_EQUITY: " + inv.getName()
-                + " — equity-oriented (≥65% equity) assumed from scheme name");
-        return Regime.EQUITY;
+
+        if (type == InvestmentType.PPF) {
+            notes.add("PPF_EXEMPT: " + inv.getName() + " — entire corpus tax-free under Section 10(11)");
+            return Regime.EXEMPT;
+        }
+
+        if (type == InvestmentType.FIXED_DEPOSIT || type == InvestmentType.POST_OFFICE_SCHEME) {
+            return Regime.INTEREST_INCOME;
+        }
+
+        if (type == InvestmentType.INSURANCE_POLICY) {
+            if (inv.getAnnualPremium() == null || inv.getSumAssured() == null
+                    || inv.getSumAssured().signum() == 0) {
+                notes.add("INSURANCE_ASSUMED_EXEMPT_10_10D: " + inv.getName()
+                        + " — premium/sum-assured not on record; exemption assumed "
+                        + "(cannot verify the Section 10(10D) threshold)");
+                return Regime.EXEMPT;
+            }
+            boolean postApril2012 = inv.getPurchaseDate() != null
+                    && !inv.getPurchaseDate().isBefore(insuranceExemptCutoffDate);
+            double threshold = postApril2012 ? insuranceExemptThresholdPost2012 : insuranceExemptThresholdPre2012;
+            double ratio = inv.getAnnualPremium().doubleValue() / inv.getSumAssured().doubleValue();
+            if (ratio <= threshold) {
+                notes.add(String.format(Locale.ROOT,
+                        "INSURANCE_EXEMPT_10_10D: %s — premium/sum-assured ratio %.4f within the %.0f%% threshold",
+                        inv.getName(), ratio, threshold * 100));
+                return Regime.EXEMPT;
+            }
+            notes.add(String.format(Locale.ROOT,
+                    "INSURANCE_TAXABLE_10_10D: %s — premium/sum-assured ratio %.4f exceeds the %.0f%% threshold; "
+                    + "proceeds taxed at slab rate (ULIP-specific Section 112A treatment simplified to slab rate here)",
+                    inv.getName(), ratio, threshold * 100));
+            return Regime.DEBT_SLAB;
+        }
+
+        if (type == InvestmentType.GOLD || type == InvestmentType.BOND || type == InvestmentType.COMMODITY) {
+            String name = inv.getName() != null ? inv.getName().toLowerCase(Locale.ROOT) : "";
+            if (type == InvestmentType.GOLD && SGB_NAME.matcher(name).find()) {
+                notes.add("GOLD_ASSUMED_SGB_EXEMPT: " + inv.getName()
+                        + " — name matches Sovereign Gold Bond; assumed exempt under Section 47(viic) "
+                        + "(RBI redemption at maturity is exempt; taxable if sold early in the secondary market)");
+                return Regime.EXEMPT;
+            }
+            return Regime.NON_EQUITY_FLAT;
+        }
+
+        return Regime.EXCLUDED;
     }
 
     double stcgRate()      { return stcgRate; }
@@ -251,10 +412,15 @@ public class CapitalGainsTaxService {
             BigDecimal ltcgTaxIfSoldToday,   // after annual exemption
             BigDecimal totalTaxIfSoldToday,
             List<HoldingTax> holdings,
-            List<String> exclusions,         // assets outside equity/slab regimes
+            List<String> exclusions,         // assets outside every known regime (e.g. crypto, real estate)
             BigDecimal slabGains,            // debt-MF gains taxed at slab rate
             BigDecimal slabTaxIfSoldToday,
-            List<String> notes               // GRANDFATHERED / MF_CLASSIFIED_* disclosures
+            List<String> notes,              // GRANDFATHERED / MF_CLASSIFIED_* / PPF_EXEMPT disclosures
+            BigDecimal exemptAmount,         // value of fully tax-exempt holdings (informational, zero tax)
+            BigDecimal interestIncomeGains,  // annual interest, FD/post-office ("Income from Other Sources")
+            BigDecimal interestIncomeTax,    // interestIncomeGains × slab rate
+            BigDecimal nonEquityFlatGains,    // GOLD/BOND/COMMODITY gains, flat rate, no indexation
+            BigDecimal nonEquityFlatTax
     ) {}
 
     public record HoldingTax(
@@ -277,6 +443,8 @@ public class CapitalGainsTaxService {
             BigDecimal exemptionHeadroom,    // ₹ of LTCG still realizable tax-free this FY
             BigDecimal carryForwardStcl,
             BigDecimal carryForwardLtcl,
-            List<String> notes
+            List<String> notes,
+            BigDecimal nonEquityFlatGains,   // GOLD/BOND/COMMODITY realized gains, flat rate
+            BigDecimal nonEquityFlatTax
     ) {}
 }

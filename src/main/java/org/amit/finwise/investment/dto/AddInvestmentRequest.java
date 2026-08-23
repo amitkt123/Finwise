@@ -6,6 +6,7 @@ import jakarta.validation.constraints.Positive;
 import org.amit.finwise.investment.enums.InvestmentType;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 
 public record AddInvestmentRequest(
         @NotNull InvestmentType type,
@@ -13,5 +14,9 @@ public record AddInvestmentRequest(
         @NotBlank String name,
         @NotNull @Positive BigDecimal quantity,
         @NotNull @Positive BigDecimal costPerUnit,
-        String platform
+        String platform,
+        BigDecimal interestRate,
+        LocalDate maturityDate,
+        BigDecimal sumAssured,
+        BigDecimal annualPremium
 ) {}

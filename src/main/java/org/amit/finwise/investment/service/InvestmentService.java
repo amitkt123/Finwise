@@ -49,13 +49,17 @@ public class InvestmentService {
     @Transactional
     public Investment addInvestment(String userId, InvestmentType type, String symbol,
                                     String name, LocalDate purchaseDate, BigDecimal quantity,
-                                    BigDecimal costPerUnit, String platform) {
+                                    BigDecimal costPerUnit, String platform,
+                                    BigDecimal interestRate, LocalDate maturityDate,
+                                    BigDecimal sumAssured, BigDecimal annualPremium) {
         BigDecimal totalCost = quantity.multiply(costPerUnit);
         Investment investment = Investment.builder()
                 .userId(userId).type(type).symbol(symbol).name(name)
                 .purchaseDate(purchaseDate).quantity(quantity).costPerUnit(costPerUnit)
                 .totalCost(totalCost).currentPrice(costPerUnit).currentValue(totalCost)
                 .platform(platform).unrealizedGainLoss(BigDecimal.ZERO).gainLossPercentage(BigDecimal.ZERO)
+                .interestRate(interestRate).maturityDate(maturityDate)
+                .sumAssured(sumAssured).annualPremium(annualPremium)
                 .build();
         log.info("Added investment: {} - {} units at {}", name, quantity, costPerUnit);
         return investmentRepository.save(investment);

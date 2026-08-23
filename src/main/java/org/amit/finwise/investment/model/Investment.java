@@ -45,6 +45,18 @@ public class Investment {
     @Column(name = "platform", length = 100)
     private String platform;
 
+    @Column(name = "interest_rate", precision = 8, scale = 4)
+    private BigDecimal interestRate;
+
+    @Column(name = "maturity_date")
+    private LocalDate maturityDate;
+
+    @Column(name = "sum_assured", precision = 19, scale = 4)
+    private BigDecimal sumAssured;
+
+    @Column(name = "annual_premium", precision = 19, scale = 4)
+    private BigDecimal annualPremium;
+
     @Column(name = "sector", length = 100)
     private String sector;
 

@@ -35,7 +35,7 @@ class CapitalGainsTaxServiceTest {
     @BeforeEach
     void setUp() {
         service = new CapitalGainsTaxService(stockPriceService, lotTrackingService,
-                0.20, 0.125, 125_000, 0.30, "2018-01-31");
+                0.20, 0.125, 125_000, 0.30, "2018-01-31", 40_000, 0.10, 0.20, "2012-04-01", 0.125, 24);
     }
 
     // ── Grandfathering (canonical §55(2)(ac) worked example) ─────────────────
@@ -118,6 +118,304 @@ class CapitalGainsTaxServiceTest {
         assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("MF_ASSUMED_EQUITY")));
     }
 
+    // ── PPF exemption ─────────────────────────────────────────────────────────
+
+    @Test
+    void ppf_isFullyExemptAndReportedNotDropped() {
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF Account")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(500_000))
+                .totalCost(BigDecimal.valueOf(500_000)).currentValue(BigDecimal.valueOf(650_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(ppf));
+
+        assertEquals(650_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.exclusions().isEmpty(), "PPF must not be silently excluded");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("PPF_EXEMPT")));
+        assertEquals(0.0, est.totalTaxIfSoldToday().doubleValue(), 1e-9);
+    }
+
+    @Test
+    void ppf_missingCurrentValue_fallsBackToTotalCostWithDisclosure() {
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF Account")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(500_000))
+                .totalCost(BigDecimal.valueOf(500_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(ppf));
+
+        assertEquals(500_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("EXEMPT_VALUE_ASSUMED_FROM_COST")));
+    }
+
+    // ── Interest income (FD / post office) ──────────────────────────────────
+
+    @Test
+    void fixedDeposit_computesAnnualInterestAtSlabRate() {
+        Investment fd = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(100_000))
+                .interestRate(BigDecimal.valueOf(7))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(fd));
+
+        assertEquals(7_000.0, est.interestIncomeGains().doubleValue(), 1e-9, "100,000 × 7%");
+        assertEquals(2_100.0, est.interestIncomeTax().doubleValue(), 1e-9, "7,000 × 30% slab");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INTEREST_SIMPLE_ANNUAL_ASSUMED")));
+    }
+
+    @Test
+    void postOfficeScheme_missingInterestRate_degradesGracefullyWithNote() {
+        Investment nsc = Investment.builder()
+                .userId(USER).type(InvestmentType.POST_OFFICE_SCHEME).name("NSC")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(nsc));
+
+        assertEquals(0.0, est.interestIncomeGains().doubleValue(), 1e-9);
+        assertTrue(est.exclusions().contains("NSC"));
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INTEREST_RATE_MISSING")));
+    }
+
+    @Test
+    void interestIncome_sameHighPlatformInterest_flagsLikelyTds() {
+        Investment fd1 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 1")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(300_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+        Investment fd2 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 2")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(300_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(fd1, fd2));
+
+        // 300,000×7% × 2 = 42,000 from the same platform, over the 40,000 TDS threshold
+        assertTrue(est.notes().stream().anyMatch(n ->
+                n.startsWith("TDS_LIKELY") && n.contains("HDFC Bank") && n.contains("₹40000")),
+                "note should interpolate the configured tds-threshold, not hardcode it");
+    }
+
+    @Test
+    void interestIncome_tdsNote_interpolatesConfiguredThreshold_notHardcoded() {
+        // Reconfigure tds-threshold away from the 40,000 default; the disclosure text
+        // must reflect the actual configured value, not a hardcoded "₹40,000".
+        CapitalGainsTaxService customService = new CapitalGainsTaxService(
+                stockPriceService, lotTrackingService,
+                0.20, 0.125, 125_000, 0.30, "2018-01-31", 20_000, 0.10, 0.20, "2012-04-01", 0.125, 24);
+
+        Investment fd1 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 1")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(150_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+        Investment fd2 = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("HDFC FD 2")
+                .purchaseDate(LocalDate.now().minusYears(1)).platform("HDFC Bank")
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(150_000))
+                .interestRate(BigDecimal.valueOf(7)).build();
+
+        CapitalGainsTaxService.TaxEstimate est = customService.estimate(List.of(fd1, fd2));
+
+        // 150,000×7% × 2 = 21,000, over the reconfigured 20,000 threshold but well
+        // under the default 40,000 — proves the note tracks the configured value.
+        assertTrue(est.notes().stream().anyMatch(n ->
+                n.startsWith("TDS_LIKELY") && n.contains("₹20000") && !n.contains("₹40000")),
+                "note should reflect the reconfigured 20,000 threshold, got: " + est.notes());
+    }
+
+    // ── Insurance (Section 10(10D)) ──────────────────────────────────────────
+
+    @Test
+    void insurance_premiumWithinTenPercentThreshold_isExempt() {
+        // premium 40,000 / sumAssured 500,000 = 8% ≤ 10% threshold (post-2012 policy)
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("LIC Term Plan")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(600_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(40_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(600_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_EXEMPT_10_10D")));
+    }
+
+    @Test
+    void insurance_premiumExceedsTenPercentThreshold_isTaxedAtSlabRate() {
+        // premium 80,000 / sumAssured 500,000 = 16% > 10% threshold (post-2012 policy)
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("ULIP Growth")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(600_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(200_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(80_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(200_000.0, est.slabGains().doubleValue(), 1e-9);
+        assertEquals(60_000.0, est.slabTaxIfSoldToday().doubleValue(), 1e-9, "200,000 × 30% slab");
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_TAXABLE_10_10D")));
+    }
+
+    @Test
+    void insurance_prePost2012Threshold_isTwentyPercentNotTen() {
+        // premium 90,000 / sumAssured 500,000 = 18% — exempt under the pre-2012 20% rule,
+        // would have been taxable under the post-2012 10% rule
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("Old LIC Endowment")
+                .purchaseDate(LocalDate.parse("2010-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(550_000))
+                .sumAssured(BigDecimal.valueOf(500_000)).annualPremium(BigDecimal.valueOf(90_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(550_000.0, est.exemptAmount().doubleValue(), 1e-9);
+    }
+
+    @Test
+    void insurance_missingSumAssured_assumedExemptWithDisclosure() {
+        Investment policy = Investment.builder()
+                .userId(USER).type(InvestmentType.INSURANCE_POLICY).name("Unknown Policy")
+                .purchaseDate(LocalDate.parse("2015-01-01"))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentValue(BigDecimal.valueOf(500_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(policy));
+
+        assertEquals(500_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("INSURANCE_ASSUMED_EXEMPT_10_10D")));
+    }
+
+    // ── Non-equity flat-rate assets (gold / bond / commodity) ────────────────
+
+    @Test
+    void gold_longTerm_flatRateNoIndexation() {
+        // Held 25 months (> 24-month LT threshold), gain 100,000 × 12.5% flat = 12,500
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(100_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(12_500.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "100,000 × 12.5% flat, no indexation");
+    }
+
+    @Test
+    void gold_shortTerm_taxedAtSlabRateNotFlatRate() {
+        // Held 23 months (< 24-month LT threshold) → slab rate, not the 12.5% LT rate
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(23))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(30_000.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "100,000 × 30% slab, short-term");
+    }
+
+    @Test
+    void bondAndCommodity_alsoUseNonEquityFlatRegime() {
+        Investment bond = Investment.builder()
+                .userId(USER).type(InvestmentType.BOND).name("REC Bond")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(100_000))
+                .currentPrice(BigDecimal.valueOf(120_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(20_000))
+                .build();
+        Investment commodity = Investment.builder()
+                .userId(USER).type(InvestmentType.COMMODITY).name("Silver ETF")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .currentPrice(BigDecimal.valueOf(60_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(10_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(bond, commodity));
+
+        assertEquals(30_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(3_750.0, est.nonEquityFlatTax().doubleValue(), 1e-9, "30,000 × 12.5%");
+    }
+
+    @Test
+    void sovereignGoldBond_nameMatch_isExemptNotFlatRate() {
+        Investment sgb = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Sovereign Gold Bond 2031 Series IV")
+                .purchaseDate(LocalDate.now().minusYears(3))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(50_000))
+                .currentValue(BigDecimal.valueOf(70_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(sgb));
+
+        assertEquals(70_000.0, est.exemptAmount().doubleValue(), 1e-9);
+        assertEquals(0.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertTrue(est.notes().stream().anyMatch(n -> n.startsWith("GOLD_ASSUMED_SGB_EXEMPT")));
+    }
+
+    @Test
+    void physicalGold_nameDoesNotMatchSgb_usesFlatRateRegime() {
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold Coin")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(BigDecimal.valueOf(100_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = service.estimate(List.of(gold));
+
+        assertEquals(100_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(0.0, est.exemptAmount().doubleValue(), 1e-9);
+    }
+
+    @Test
+    void nonEquityFlat_nullUnrealizedGainLoss_excludedNotSilentlyDropped() {
+        // GOLD/BOND/COMMODITY holding with no gain data must surface in exclusions
+        // (not throw, not vanish from the output entirely).
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(25))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(400_000))
+                .currentPrice(BigDecimal.valueOf(500_000))
+                .unrealizedGainLoss(null)
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est = assertDoesNotThrow(
+                () -> service.estimate(List.of(gold)));
+
+        assertTrue(est.exclusions().stream().anyMatch(e -> e.startsWith("Physical Gold")),
+                "expected the gold holding to be reported in exclusions, got: " + est.exclusions());
+        assertEquals(0.0, est.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(0.0, est.nonEquityFlatTax().doubleValue(), 1e-9);
+        assertTrue(est.holdings().isEmpty(), "excluded holding should not also appear in holdings");
+    }
+
     // ── Realized netting ─────────────────────────────────────────────────────
 
     @Test
@@ -168,6 +466,77 @@ class CapitalGainsTaxServiceTest {
         assertEquals(0.0, s.taxableLtcg().doubleValue(), 1e-9);
     }
 
+    @Test
+    void realizedTax_nonEquityFlatSale_usesFlatRateNotEquityNetting() {
+        // Gold sold at a 30,000 gain. buyDate→sellDate is 29 months apart (> 24-month non-equity
+        // LT threshold) even though the ledger's own longTerm flag (1-year equity rule) is false —
+        // realizedTax() must use its own 24-month check for NON_EQUITY_FLAT, not the ledger's flag.
+        when(lotTrackingService.buildLedger(USER)).thenReturn(new LotTrackingService.LotLedger(
+                Map.of(), List.of(new LotTrackingService.RealizedGain(
+                        "GOLDBEES",
+                        LocalDate.parse("2023-01-01"), LocalDate.parse("2025-06-01"),
+                        BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(30_000),
+                        false, InvestmentType.GOLD)),
+                List.of()));
+
+        CapitalGainsTaxService.RealizedTaxSummary s =
+                service.realizedTax(USER, LocalDate.parse("2025-06-15"));
+
+        assertEquals(30_000.0, s.nonEquityFlatGains().doubleValue(), 1e-9);
+        assertEquals(3_750.0, s.nonEquityFlatTax().doubleValue(), 1e-9, "30,000 × 12.5%, held > 24 months");
+        assertEquals(0.0, s.taxableStcg().doubleValue(), 1e-9, "must not enter equity netting");
+        assertEquals(0.0, s.taxableLtcg().doubleValue(), 1e-9, "must not enter equity netting");
+    }
+
+    // ── Mixed-portfolio integration: regimes must not cross-contaminate ──────
+
+    @Test
+    void mixedPortfolio_allFiveRegimesComputeIndependently() {
+        Investment stock = Investment.builder()
+                .userId(USER).type(InvestmentType.STOCK).symbol("TCS").name("TCS")
+                .purchaseDate(LocalDate.now().minusMonths(6))
+                .unrealizedGainLoss(BigDecimal.valueOf(10_000))
+                .build();
+        Investment debtMf = Investment.builder()
+                .userId(USER).type(InvestmentType.MUTUAL_FUND).name("ABC Corporate Bond Fund")
+                .purchaseDate(LocalDate.now().minusYears(3))
+                .unrealizedGainLoss(BigDecimal.valueOf(5_000))
+                .build();
+        Investment fd = Investment.builder()
+                .userId(USER).type(InvestmentType.FIXED_DEPOSIT).name("SBI FD")
+                .purchaseDate(LocalDate.now().minusYears(1))
+                .quantity(BigDecimal.ONE).costPerUnit(BigDecimal.valueOf(200_000))
+                .interestRate(BigDecimal.valueOf(6.5))
+                .build();
+        Investment gold = Investment.builder()
+                .userId(USER).type(InvestmentType.GOLD).name("Physical Gold")
+                .purchaseDate(LocalDate.now().minusMonths(30))
+                .unrealizedGainLoss(BigDecimal.valueOf(20_000))
+                .build();
+        Investment ppf = Investment.builder()
+                .userId(USER).type(InvestmentType.PPF).name("PPF")
+                .purchaseDate(LocalDate.now().minusYears(5))
+                .currentValue(BigDecimal.valueOf(300_000))
+                .build();
+
+        CapitalGainsTaxService.TaxEstimate est =
+                service.estimate(List.of(stock, debtMf, fd, gold, ppf));
+
+        assertEquals(10_000.0, est.stcgGains().doubleValue(), 1e-9, "equity STCG untouched by other regimes");
+        assertEquals(5_000.0, est.slabGains().doubleValue(), 1e-9, "debt MF slab gain untouched");
+        assertEquals(13_000.0, est.interestIncomeGains().doubleValue(), 1e-9, "200,000 × 6.5%");
+        assertEquals(20_000.0, est.nonEquityFlatGains().doubleValue(), 1e-9, "gold gain untouched");
+        assertEquals(300_000.0, est.exemptAmount().doubleValue(), 1e-9, "PPF fully exempt");
+
+        // Total tax must be the simple sum of each regime's own tax — no cross-netting.
+        double expectedTotal = 2_000.0            // 10,000 × 20% equity STCG
+                + 1_500.0                          // 5,000 × 30% slab
+                + (13_000.0 * 0.30)                // interest income × slab
+                + 2_500.0;                         // 20,000 × 12.5% non-equity flat LTCG
+        assertEquals(expectedTotal, est.totalTaxIfSoldToday().doubleValue(), 1e-6);
+        assertTrue(est.exclusions().isEmpty());
+    }
+
     // ── fixtures ────────────────────────────────────────────────────────────
 
     private static Investment legacy(String symbol, double cost, double current, double qty) {
@@ -189,10 +558,16 @@ class CapitalGainsTaxServiceTest {
     /** Builds a RealizedGain whose gain() equals the requested rupee amount. */
     private static LotTrackingService.RealizedGain realized(String sym, double gain,
                                                             boolean longTerm, String sellDate) {
+        return realized(sym, gain, longTerm, sellDate, InvestmentType.STOCK);
+    }
+
+    private static LotTrackingService.RealizedGain realized(String sym, double gain,
+                                                            boolean longTerm, String sellDate,
+                                                            InvestmentType type) {
         // qty 1, cost 0, sell price = gain → gain() = gain
         return new LotTrackingService.RealizedGain(sym,
                 LocalDate.parse(sellDate).minusYears(longTerm ? 2 : 0).minusDays(longTerm ? 0 : 30),
                 LocalDate.parse(sellDate),
-                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(gain), longTerm);
+                BigDecimal.ONE, BigDecimal.ZERO, BigDecimal.valueOf(gain), longTerm, type);
     }
 }
